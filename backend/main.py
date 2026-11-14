@@ -725,23 +725,41 @@ def _test_proxy_id():
     return row["portfolio_id"] if row else None
 
 
+IP_ECHO_URL="https://api.ipify.org?format=json"
+
+
+def _probe_exit_ip(proxies) -> str:
+    """通过该代理查一次出口 IP，仅用于表格展示；查不到就留空，绝不影响检测结论。
+
+    目标域名和币安不同，不会占用币安的 2.05 秒同接口锁。
+    """
+    try:
+        data=requests.get(IP_ECHO_URL,proxies=proxies,timeout=4).json()
+        return str(data.get("ip") or "") if isinstance(data,dict) else ""
+    except Exception:
+        return ""
+
+
 def _probe_proxy(url):
     pid=_test_proxy_id()
     if not pid: return {"ok":False,"error":"请先添加一个交易员，代理检测需要 portfolioId"}
     started=time.perf_counter()
     try:
         _,proxies=_normalize_proxy(url); response=bapi.fetch_order_history(pid,proxies,page_size=1)
-        return {"ok":True,"latency_ms":round((time.perf_counter()-started)*1000,2),"data_present":"data" in response}
+        return {"ok":True,"latency_ms":round((time.perf_counter()-started)*1000,2),
+                "exit_ip":_probe_exit_ip(proxies),"data_present":"data" in response}
     except Exception as exc: notifier.notify("proxy_error",f"代理检测失败 {url}: {exc}"); return {"ok":False,"error":str(exc)}
 
 
 def _save_proxy_result(proxy_id: int, result: dict) -> None:
-    """把检测结果（含失败原因）写回 proxy_nodes，前端表格直接显示。"""
+    """把检测结果（含失败原因与出口 IP）写回 proxy_nodes，前端表格直接显示。"""
     ok = bool(result.get("ok"))
+    exit_ip = str(result.get("exit_ip") or "")
     db.get_conn().execute(
-        "UPDATE proxy_nodes SET status=?, last_latency_ms=?, error_msg=?, updated_at=? WHERE id=?",
+        "UPDATE proxy_nodes SET status=?, last_latency_ms=?, error_msg=?, "
+        "exit_ip=COALESCE(NULLIF(?, ''), exit_ip), updated_at=? WHERE id=?",
         ("OK" if ok else "FAIL", result.get("latency_ms"),
-         "" if ok else str(result.get("error") or "")[:300], int(time.time()), proxy_id))
+         "" if ok else str(result.get("error") or "")[:300], exit_ip, int(time.time()), proxy_id))
     db.get_conn().commit()
 
 
