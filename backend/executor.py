@@ -217,17 +217,24 @@ def _cancel_conditional_orders(client, symbol: str, position_side: str) -> int:
     return cancelled
 
 
+PNL_INCOME_TYPES = ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")
+
+
 def realized_pnl_total(client) -> float:
-    """累计已实现盈亏：汇总币安 income 接口里的 REALIZED_PNL（含手动平仓）。
+    """累计**净**已实现盈亏 = 已实现盈亏 + 手续费 + 资金费（三者都取币安 income 的原始符号，费用为负）。
 
     2026-11-15：realized_pnl 此前只读不写，页面上永远是 0。
-    这里走 GET /fapi/v1/income（权重 30），由调用方负责节流。
+    只算 REALIZED_PNL 会低估成本（永续合约的手续费与资金费都是真实支出），
+    因此把 COMMISSION / FUNDING_FEE 一并计入，得到"跟币安 App 对得上"的净额。
+    走 GET /fapi/v1/income（权重 30）一次拉全部类型再按类型过滤，由调用方节流。
     """
-    params = {"incomeType": "REALIZED_PNL", "asset": "USDT", "limit": 1000}
+    params = {"asset": "USDT", "limit": 1000}
     getter = getattr(client, "fapiPrivateGetIncome", None)
     rows = getter(params) if callable(getter) else client.fetch2("income", "fapiPrivate", "GET", params)
     total = 0.0
     for row in rows or []:
+        if str(row.get("incomeType") or "") not in PNL_INCOME_TYPES:
+            continue
         try: total += float(row.get("income") or 0)
         except (TypeError, ValueError, AttributeError): continue
     return total
