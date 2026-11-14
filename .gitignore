@@ -1,0 +1,9 @@
+# 运行时数据：含主密钥 keyfile、加密后的 API Key 和数据库，绝不进仓库
+data/
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.log

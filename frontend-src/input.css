@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+    [v-cloak]{display:none} html{color-scheme:light dark}
+    body{background:theme('colors.ink.50');color:theme('colors.ink.800');font-variant-numeric:tabular-nums}
+    .dark body{background:theme('colors.ink.950');color:theme('colors.ink.100')}
+    .card{@apply bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 rounded-xl}
+    .nav-item{@apply flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors}
+    .nav-item:hover{@apply bg-ink-100 dark:bg-ink-800}
+    .nav-active{@apply bg-acc-100 text-acc-700 dark:bg-ink-800 dark:text-acc-300 font-semibold}
+    .btn{@apply inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-acc-400}
+    .btn:disabled{@apply opacity-50 cursor-not-allowed}
+    .btn-primary{@apply bg-acc-500 text-white hover:bg-acc-600 active:bg-acc-700}
+    .btn-ghost{@apply bg-transparent border border-ink-300 dark:border-ink-700 hover:bg-ink-100 dark:hover:bg-ink-800}
+    .btn-danger{@apply bg-err text-white hover:bg-red-700 active:bg-red-800}
+    .btn-sm{@apply px-2 py-1 text-xs}
+    .input{@apply w-full px-3 py-1.5 rounded-lg border border-ink-300 dark:border-ink-700 bg-white dark:bg-ink-950 text-sm focus:outline-none focus:ring-2 focus:ring-acc-400}
+    .select{@apply px-2 py-1.5 rounded-lg border border-ink-300 dark:border-ink-700 bg-white dark:bg-ink-950 text-sm focus:outline-none focus:ring-2 focus:ring-acc-400}
+    .badge{@apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium}
+    table{@apply w-full text-left border-collapse}
+    th{@apply px-3 py-2 text-ink-500 dark:text-ink-400 font-medium text-xs uppercase tracking-wide sticky top-0 bg-white dark:bg-ink-900}
+    td{@apply px-3 py-2 border-t border-ink-200 dark:border-ink-800 text-sm}
+    .skeleton{@apply animate-pulse bg-ink-200 dark:bg-ink-800 rounded}
+    .num-right td:not(:first-child){text-align:right}
+    .modal-overlay{@apply fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4}
+    .modal-box{@apply card w-full max-w-3xl max-h-[85vh] flex flex-col}
+    .pnl-pos{@apply text-ok font-medium} .pnl-neg{@apply text-err font-medium}
+  

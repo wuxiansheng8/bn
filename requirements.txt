@@ -1,0 +1,14 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+requests==2.32.3
+PySocks==1.7.1
+ccxt==4.4.27
+cryptography==43.0.3
+pydantic==2.10.3
+pydantic-settings==2.6.1
+python-multipart==0.0.12
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-jose[cryptography]==3.3.0
+aiosqlite==0.20.0
+websockets==14.1

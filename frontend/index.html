@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>币安极速多IP监控与自动跟单系统 v3.1</title>
+  <script src="/static/vue.global.prod.js"></script>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+<div id="app" v-cloak class="min-h-screen flex">
+
+  <!-- 侧边导航 -->
+  <aside class="w-56 shrink-0 border-r border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 flex flex-col">
+    <div class="px-4 py-4 flex items-center gap-2 border-b border-ink-200 dark:border-ink-800">
+      <div class="w-8 h-8 rounded-lg bg-acc-500 text-white flex items-center justify-center font-bold text-sm">B</div>
+      <div><div class="text-sm font-semibold">跟单系统</div><div class="text-xs text-ink-400">v3.1</div></div>
+    </div>
+    <nav class="flex-1 p-2 space-y-0.5">
+      <div v-for="m in menus" :key="m.id" :class="['nav-item', currentMenu===m.id?'nav-active':'']" @click="switchMenu(m.id)" role="button" tabindex="0" @keyup.enter="switchMenu(m.id)">
+        <span>{{m.icon}}</span><span>{{m.label}}</span>
+      </div>
+    </nav>
+    <div class="p-3 border-t border-ink-200 dark:border-ink-800 space-y-1 text-xs">
+      <div class="flex items-center gap-1 cursor-pointer" @click="toggleLiveTrading">
+        <span class="text-ink-400">实盘：</span>
+        <span v-if="liveEnabled" class="text-ok font-semibold">已开启</span>
+        <span v-else class="badge bg-err/10 text-err font-bold">已关闭</span>
+      </div>
+      <div class="flex items-center gap-1 text-ink-400">WS：<span :class="wsConnected?'text-ok':'text-err'">{{wsConnected?'已连接':'断开'}}</span></div>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="flex-1 flex flex-col min-w-0">
+    <header class="h-14 border-b border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 flex items-center justify-between px-4 shrink-0">
+      <div class="flex items-center gap-3">
+        <span class="w-2.5 h-2.5 rounded-full" :class="systemOnline?'bg-ok animate-pulse':'bg-err'"></span>
+        <span class="text-sm font-semibold">{{currentLabel}}</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-danger btn-sm" @click="confirmEmergencyClose">🔴 一键紧急全平</button>
+        <button class="btn btn-ghost btn-sm" @click="toggleTheme">{{darkTheme?'☀️':'🌙'}}</button>
+      </div>
+    </header>
+
+    <section class="flex-1 overflow-auto p-4">
+      <!-- 登录 -->
+      <div v-if="!authed" class="max-w-sm mx-auto mt-20 card p-6 space-y-3">
+        <h2 class="text-lg font-semibold">{{needSetup?'首次使用：设置管理员密码':'系统登录'}}</h2>
+        <div v-if="needSetup" class="text-xs text-ink-400">尚未设置管理员密码。请设置账号和不少于 8 位的密码，设置后只能通过登录进入。</div>
+        <div><label class="block text-sm mb-1 text-ink-500">账号</label><input v-model="loginForm.username" class="input" placeholder="admin" autocomplete="username" /></div>
+        <div><label class="block text-sm mb-1 text-ink-500">密码</label><input v-model="loginForm.password" type="password" class="input" @keyup.enter="needSetup?doSetup():doLogin()" autocomplete="current-password" /></div>
+        <div v-if="needSetup"><label class="block text-sm mb-1 text-ink-500">确认密码</label><input v-model="setupConfirm" type="password" class="input" @keyup.enter="doSetup" autocomplete="new-password" /></div>
+        <div v-if="loginErr" class="text-err text-xs" role="alert">{{loginErr}}</div>
+        <button v-if="needSetup" class="btn btn-primary w-full" :disabled="loggingIn" @click="doSetup">{{loggingIn?'设置中…':'设置并进入'}}</button>
+        <button v-else class="btn btn-primary w-full" :disabled="loggingIn" @click="doLogin">{{loggingIn?'登录中…':'登录'}}</button>
+      </div>
+
+      <div v-else>
+        <!-- 菜单1：账户总览 -->
+        <div v-if="currentMenu==='overview'" class="space-y-4">
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">总权益</div><div class="text-xl font-bold">{{fNum(sumEquity)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
+            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">总可用</div><div class="text-xl font-bold">{{fNum(sumAvail)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
+            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">跟单持仓价值</div><div class="text-xl font-bold">{{fNum(sumPosVal)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
+            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">总浮盈亏</div><div class="text-xl font-bold" :class="sumUPnl>=0?'pnl-pos':'pnl-neg'">{{fNum(sumUPnl)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
+            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">总已实现</div><div class="text-xl font-bold" :class="sumRealized>=0?'pnl-pos':'pnl-neg'">{{fNum(sumRealized)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
+          </div>
+          <div class="flex justify-between items-center"><h3 class="font-semibold text-sm">账户列表</h3><button class="btn btn-danger btn-sm" @click="confirmEmergencyClose">🔴 紧急全平所有账户</button></div>
+          <div v-if="accountsLoading" class="space-y-3"><div v-for="i in 2" :key="i" class="card p-4 space-y-2"><div class="skeleton h-4 w-32"></div><div class="skeleton h-3 w-48"></div><div class="skeleton h-3 w-40"></div></div></div>
+          <div v-else-if="accountsErr" class="card p-6 text-center text-err">{{accountsErr}} <button class="btn btn-ghost btn-sm ml-2" @click="loadAccounts">重试</button></div>
+          <div v-else-if="!accounts.length" class="card p-8 text-center text-ink-400">暂无 API 账户，请前往「功能设置」添加</div>
+          <div v-else class="grid gap-3 sm:grid-cols-2">
+            <div v-for="acc in accounts" :key="acc.id" class="card p-4 space-y-2">
+              <div class="flex items-center justify-between">
+                <div class="font-semibold text-sm">{{acc.remark}}</div>
+                <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" :class="acc.is_enabled&&!acc.status_msg?'bg-ok':'bg-err'"></span><span class="text-xs text-ink-400">{{acc.is_enabled&&!acc.status_msg?'正常':'异常'}}</span></div>
+              </div>
+              <div class="text-xs text-ink-400">跟随：{{traderName(acc.followed_trader_id)}}</div>
+              <div class="grid grid-cols-2 gap-2 text-xs">
+                <div><span class="text-ink-400">净值</span> <span class="font-medium">{{fNum(acc.cached_equity)}} U</span></div>
+                <div><span class="text-ink-400">可用</span> <span class="font-medium">{{fNum(acc.cached_available)}} U</span></div>
+                <div><span class="text-ink-400">持仓数</span> <span class="font-medium">{{(acc._positions||[]).length}}</span></div>
+                <div><span class="text-ink-400">持仓价值</span> <span class="font-medium">{{fNum(acc._posVal)}} U</span></div>
+                <div><span class="text-ink-400">浮盈亏</span> <span class="font-medium" :class="acc._uPnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc._uPnl)}} U ({{fPct(acc._uPnlPct)}})</span></div>
+                <div><span class="text-ink-400">已实现</span> <span class="font-medium" :class="acc.realized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc.realized_pnl)}} U</span></div>
+              </div>
+              <div v-if="acc.status_msg" class="text-xs text-err">{{acc.status_msg}}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 菜单2：交易员监控 -->
+        <div v-if="currentMenu==='monitor'" class="space-y-4">
+          <div v-if="tradersLoading" class="grid gap-4 sm:grid-cols-2"><div v-for="i in 2" :key="i" class="card p-4 space-y-3"><div class="skeleton h-5 w-36"></div><div class="grid grid-cols-2 gap-2"><div v-for="j in 4" :key="j" class="skeleton h-10"></div></div></div></div>
+          <div v-else-if="tradersErr" class="card p-6 text-center text-err">{{tradersErr}} <button class="btn btn-ghost btn-sm ml-2" @click="loadTraders">重试</button></div>
+          <div v-else-if="!traders.length" class="card p-8 text-center text-ink-400">暂无交易员，请前往「功能设置」添加</div>
+          <div v-else class="grid gap-4 sm:grid-cols-2">
+            <div v-for="t in traders" :key="t.portfolio_id" class="card p-4 space-y-3">
+              <div class="flex items-start justify-between">
+                <div class="flex items-center gap-2"><div class="w-9 h-9 rounded-full bg-acc-500 text-white flex items-center justify-center font-bold text-sm shrink-0">{{(t.nickname||'?')[0]}}</div><div><div class="font-semibold text-sm">{{t.nickname||t.portfolio_id}}</div><div class="text-xs text-ink-400 flex items-center gap-1"><span class="badge bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">Binance</span><span v-for="a in followingAccounts(t.portfolio_id)" :key="a.id" class="badge bg-acc-100 text-acc-700 dark:bg-ink-800 dark:text-acc-300">{{a.remark}}</span></div></div>
+                </div><span class="badge text-xs" :class="t.status==='ACTIVE'?'bg-ok/10 text-ok':'bg-err/10 text-err'">● {{t.status==='ACTIVE'?'监控中':'抓取异常'}}</span>
+              </div>
+              <div class="grid grid-cols-2 gap-2 text-xs">
+                <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">保证金余额</div><div class="font-semibold">{{fNum(t.margin_balance)}} U</div></div>
+                <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">实际杠杆 <span class="text-ink-300">(持仓÷保证金)</span></div><div class="font-semibold">{{traderLeverage(t)}}x</div></div>
+                <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">持仓总价值 <span class="text-ink-300">(均价估算)</span></div><div class="font-semibold">{{fNum(traderPosValue(t))}} U</div></div>
+                <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">当前浮盈亏 <span class="text-ink-300">(实时估算)</span></div><div class="font-semibold text-ink-300">--</div></div>
+              </div>
+              <div class="space-y-1">
+                <template v-if="traderPositionList(t).length">
+                  <div v-for="pos in traderPositionList(t)" :key="pos.symbol+pos.side" class="flex items-center justify-between text-xs py-1 border-b border-ink-100 dark:border-ink-800 last:border-0">
+                    <span class="font-medium">{{pos.symbol}}</span><span class="badge" :class="pos.side==='LONG'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{pos.side==='LONG'?'多':'空'}}</span>
+                    <span>{{fNum(pos.qty,4)}}</span><span class="text-ink-400">{{fNum(pos.qty*pos.avg_price)}} U</span><span class="text-ink-400">均价 {{fNum(pos.avg_price)}}</span>
+                  </div>
+                </template>
+                <div v-else class="text-xs text-ink-400 py-2 text-center">当前空仓</div>
+              </div>
+              <div v-if="traderPositionList(t).length" class="flex h-1.5 rounded-full overflow-hidden gap-0.5"><div class="bg-ok rounded-full" :style="{width: traderLongPct(t)+'%'}"></div><div class="bg-err rounded-full" :style="{width: (100-traderLongPct(t))+'%'}"></div></div>
+              <div class="flex items-center justify-between text-xs text-ink-400">
+                <span>最近同步：{{formatTime(t.last_sync_ts*1000)}}</span>
+                <div class="flex gap-1.5"><button class="btn btn-ghost btn-sm" @click="openTraderModal(t,'orders')">近期操作</button><button class="btn btn-ghost btn-sm" @click="openTraderModal(t,'hist')">历史仓位</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 菜单3：仓位与订单 -->
+        <div v-if="currentMenu==='positions'" class="space-y-4">
+          <h3 class="font-semibold text-sm">当前持仓</h3>
+          <div v-if="posLoading" class="card p-4"><div class="skeleton h-24 w-full"></div></div>
+          <div v-else-if="posErr" class="card p-4 text-err text-sm">{{posErr}} <button class="btn btn-ghost btn-sm ml-2" @click="loadAllPositions">重试</button></div>
+          <div v-else-if="!allPositions.length" class="card p-8 text-center text-ink-400">暂无持仓</div>
+          <div v-else class="card overflow-hidden"><div class="overflow-x-auto"><table class="num-right"><thead><tr><th class="text-left">账户</th><th class="text-left">交易员</th><th class="text-left">币种</th><th>方向</th><th>数量</th><th>价值</th><th>均价</th><th>标记价</th><th>浮盈亏</th><th>盈亏%</th><th>状态</th><th>操作</th></tr></thead><tbody>
+            <tr v-for="p in allPositions" :key="p._key">
+              <td class="text-left">{{p.api_remark}}</td><td class="text-left text-ink-400 text-xs">{{p.trader_nickname||'--'}}</td><td class="text-left font-medium">{{p.symbol}}</td>
+              <td><span class="badge" :class="p.position_side==='LONG'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{p.position_side==='LONG'?'多':'空'}}</span></td>
+              <td>{{fNum(p.qty,4)}}</td><td>{{fNum(p.qty*(p.mark_price||p.avg_price))}}</td><td>{{fNum(p.avg_price)}}</td><td>{{p.mark_price?fNum(p.mark_price):'--'}}</td>
+              <td :class="p.unrealized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(p.unrealized_pnl)}}</td><td :class="p.pnl_pct>=0?'pnl-pos':'pnl-neg'">{{fPct(p.pnl_pct)}}</td>
+              <td><span v-if="p.is_overridden" class="badge bg-warn/10 text-warn">已接管</span><span v-else class="badge bg-ok/10 text-ok">跟单中</span></td>
+              <td><div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="manualCloseHalf(p)" :disabled="actionLoading">平半</button><button class="btn btn-ghost btn-sm" @click="manualCloseAll(p)" :disabled="actionLoading">全平</button><button class="btn btn-ghost btn-sm" @click="openTpSl(p)">TP/SL</button><button v-if="p.is_overridden" class="btn btn-ghost btn-sm" @click="manualResume(p)" :disabled="actionLoading">恢复跟单</button></div></td>
+            </tr>
+          </tbody></table></div></div>
+          <h3 class="font-semibold text-sm mt-2">历史跟单记录</h3>
+          <div v-if="copyOrdersLoading" class="card p-4"><div class="skeleton h-24 w-full"></div></div>
+          <div v-else-if="!copyOrders.length" class="card p-8 text-center text-ink-400">暂无跟单记录</div>
+          <div v-else class="card overflow-hidden"><div class="overflow-x-auto"><table class="num-right"><thead><tr><th class="text-left">时间</th><th class="text-left">账户</th><th class="text-left">交易员</th><th class="text-left">币种</th><th class="text-left">操作</th><th>我方数量</th><th>我方均价</th><th>交易员均价</th><th>滑点%</th><th>实现盈亏</th><th>状态</th></tr></thead><tbody>
+            <tr v-for="o in copyOrders" :key="o.id"><td class="text-left text-xs text-ink-400">{{formatTime(o.created_at*1000)}}</td><td class="text-left">{{o.api_remark}}</td><td class="text-left text-xs text-ink-400">{{o.trader_nickname}}</td><td class="text-left font-medium">{{o.symbol}}</td><td class="text-left"><span class="text-xs">{{o.action}}</span></td><td>{{fNum(o.my_qty,4)}}</td><td>{{fNum(o.my_price)}}</td><td>{{fNum(o.trader_price)}}</td><td :class="slippage(o)>0?'pnl-neg':'pnl-pos'">{{fNum(slippage(o),3)}}</td><td :class="o.realized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(o.realized_pnl)}}</td><td><span class="badge text-xs" :class="o.status==='SUCCESS'?'bg-ok/10 text-ok':o.status==='FAILED'?'bg-err/10 text-err':'bg-ink-100 text-ink-500 dark:bg-ink-800'">{{o.status==='SUCCESS'?'成功':o.status==='FAILED'?'失败':'跳过'}}</span><span v-if="o.error_msg" class="text-xs text-ink-400 ml-1">{{o.error_msg}}</span></td></tr>
+          </tbody></table></div><div class="p-3 text-center"><button class="btn btn-ghost btn-sm" @click="loadMoreOrders">加载更多</button></div></div>
+        </div>
+
+        <!-- 菜单4：功能设置 -->
+        <div v-if="currentMenu==='settings'" class="space-y-6">
+          <!-- 模块1：币安 API 账户 -->
+          <div class="card p-4 space-y-3">
+            <div class="flex justify-between items-center"><h3 class="font-semibold text-sm">① 币安 API 账户</h3><button class="btn btn-primary btn-sm" @click="openAddAccount()">添加账户</button></div>
+            <div v-if="settingsAccountsLoading" class="space-y-2"><div v-for="i in 2" :key="i" class="skeleton h-10 w-full"></div></div>
+            <div v-else-if="!settingsAccounts.length" class="text-ink-400 text-sm p-4 text-center">暂无账户</div>
+            <div v-else class="overflow-x-auto"><table><thead><tr><th class="text-left">备注</th><th class="text-left">API Key</th><th class="text-left">跟随交易员</th><th>比例</th><th>杠杆</th><th>状态</th><th>操作</th></tr></thead><tbody>
+              <tr v-for="acc in settingsAccounts" :key="acc.id">
+                <td class="text-left font-medium">{{acc.remark}}</td><td class="text-left font-mono text-xs">{{acc.api_key||'****'}}</td><td class="text-left text-xs">{{traderName(acc.followed_trader_id)}}</td><td>{{acc.copy_ratio}}</td><td>{{acc.default_leverage}}x</td><td><span class="badge" :class="acc.is_enabled?'bg-ok/10 text-ok':'bg-ink-100 text-ink-400'">{{acc.is_enabled?'启用':'禁用'}}</span></td>
+                <td><div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkApi(acc.id)">检测</button><button class="btn btn-ghost btn-sm" @click="openEditAccount(acc)">编辑</button><button class="btn btn-ghost btn-sm text-err" @click="deleteAccount(acc.id)">删除</button></div></td>
+              </tr>
+            </tbody></table></div>
+          </div>
+
+          <!-- 模块2：监控交易员 -->
+          <div class="card p-4 space-y-3">
+            <h3 class="font-semibold text-sm">② 监控交易员</h3>
+            <div class="flex gap-2"><input v-model="addTraderInput" class="input flex-1" placeholder="粘贴带单主页 URL 或 portfolioId" @keyup.enter="addTrader()" /><button class="btn btn-primary btn-sm" @click="addTrader()" :disabled="!addTraderInput.trim()||addTraderBusy">{{addTraderBusy?'初始化底账中…':'添加'}}</button></div>
+            <div v-if="addTraderMsg" class="text-xs" :class="addTraderOk?'text-ok':'text-err'">{{addTraderMsg}}</div>
+            <div v-if="settingsTraders.length" class="overflow-x-auto"><table><thead><tr><th class="text-left">昵称</th><th class="text-left">portfolioId</th><th>状态</th><th>绑定账户</th><th>操作</th></tr></thead><tbody>
+              <tr v-for="t in settingsTraders" :key="t.portfolio_id"><td class="text-left font-medium">{{t.nickname}}</td><td class="text-left font-mono text-xs">{{t.portfolio_id}}</td><td><span class="badge" :class="t.status==='ACTIVE'?'bg-ok/10 text-ok':t.status==='ERROR'?'bg-err/10 text-err':'bg-ink-100 text-ink-400'">{{t.status}}</span></td><td class="text-xs">{{followingAccounts(t.portfolio_id).map(a=>a.remark).join(', ')||'--'}}</td><td><button class="btn btn-ghost btn-sm" @click="resetTrader(t.portfolio_id)">重置状态</button><button class="btn btn-ghost btn-sm text-err" @click="deleteTrader(t.portfolio_id)">移除</button></td></tr>
+            </tbody></table></div>
+            <div v-else class="text-ink-400 text-sm p-2 text-center">暂无交易员</div>
+          </div>
+
+          <!-- 模块3：代理节点池 -->
+          <div class="card p-4 space-y-3">
+            <div class="flex justify-between items-center"><h3 class="font-semibold text-sm">③ 代理节点池</h3><button class="btn btn-primary btn-sm" @click="checkAllProxies()" :disabled="checkAllRunning">{{checkAllRunning?'检测中…':'一键检测全部'}}</button></div>
+            <textarea v-model="proxyBulkInput" class="input font-mono text-xs" rows="3" placeholder="批量导入（每行一个）：socks5://user:pass@ip:port 或 http://... 或 ip:port:user:pass"></textarea>
+            <button class="btn btn-ghost btn-sm" @click="addProxies()" :disabled="!proxyBulkInput.trim()">批量添加</button>
+            <div v-if="proxies.length" class="overflow-x-auto"><table><thead><tr><th class="text-left">代理</th><th>出口IP</th><th>延迟</th><th>状态</th><th>失败</th><th>操作</th></tr></thead><tbody>
+              <tr v-for="p in proxies" :key="p.id"><td class="text-left font-mono text-xs">{{p.proxy_url}}</td><td>{{p.exit_ip||'--'}}</td><td>{{p.last_latency_ms? p.last_latency_ms+'ms':'--'}}</td><td><span class="badge" :class="p.status==='OK'?'bg-ok/10 text-ok':p.status==='FAIL'?'bg-err/10 text-err':'bg-ink-100 text-ink-400'">{{p.status}}</span></td><td>{{p.fail_count||0}}</td><td><div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkProxy(p.id)">检测</button><button class="btn btn-ghost btn-sm text-err" @click="deleteProxy(p.id)">删除</button></div></td></tr>
+            </tbody></table></div>
+            <div v-else class="text-ink-400 text-sm p-2 text-center">暂无代理</div>
+            <div class="text-xs text-ink-400">理论有效频率：{{theoryFreq}} 次/秒（建议代理数 ≥ {{Math.ceil((pollTg.poll_interval_sec||2.5)*2.05)}}）</div>
+          </div>
+
+          <!-- 模块4：轮询节拍与 TG -->
+          <div class="card p-4 space-y-3">
+            <h3 class="font-semibold text-sm">④ 轮询节拍与 TG 通知</h3>
+            <div class="grid sm:grid-cols-2 gap-3">
+              <div><label class="block text-xs text-ink-400 mb-1">全局发射节拍（秒）</label><input v-model.number="pollTg.poll_interval_sec" type="number" step="0.1" min="0.1" class="input" /></div>
+              <div class="flex items-end"><span class="text-xs" :class="pollFreqWarn?'text-warn':'text-ink-400'">{{pollFreqWarn||'节拍合理'}}</span></div>
+              <div><label class="block text-xs text-ink-400 mb-1">TG Bot Token</label><input v-model="pollTg.tg_bot_token" class="input font-mono text-xs" placeholder="123456:ABC-DEF..." /></div>
+              <div><label class="block text-xs text-ink-400 mb-1">TG Chat ID</label><input v-model="pollTg.tg_chat_id" class="input" placeholder="-100123456789" /></div>
+            </div>
+            <div class="flex items-center gap-2"><label class="text-sm">TG 启用</label><input type="checkbox" v-model="pollTg.tg_enabled" /></div>
+            <div class="flex gap-2"><button class="btn btn-primary btn-sm" @click="savePollTg()">保存</button><button class="btn btn-ghost btn-sm" @click="testTg()">发送测试通知</button></div>
+            <div v-if="tgTestMsg" class="text-xs" :class="tgTestOk?'text-ok':'text-err'">{{tgTestMsg}}</div>
+          </div>
+        </div>
+
+        <!-- 菜单5：日志 -->
+        <div v-if="currentMenu==='logs'" class="space-y-3">
+          <div class="card p-3 flex flex-wrap gap-2 items-center">
+            <select v-model="logFilter.level" class="select w-32" @change="loadLogs"><option value="">全部级别</option><option value="TRADE">交易与跟单</option><option value="WARN">预警</option><option value="ERROR">错误诊断</option><option value="INFO">INFO</option></select>
+            <input v-model="logFilter.keyword" class="input flex-1 min-w-32" placeholder="搜索关键词…" @input="debounceLogs" />
+            <div class="flex items-center gap-1 ml-auto text-xs text-ink-400">自动清理<input v-model.number="logRetDays" type="number" min="1" max="365" class="input w-16 text-center" />天<button class="btn btn-primary btn-sm" @click="saveLogRetention">保存</button></div>
+          </div>
+          <div v-if="logsLoading" class="card p-4 space-y-2"><div v-for="i in 5" :key="i" class="skeleton h-5 w-full"></div></div>
+          <div v-else-if="logsErr" class="card p-4 text-err text-sm">{{logsErr}} <button class="btn btn-ghost btn-sm ml-2" @click="loadLogs">重试</button></div>
+          <div v-else-if="!logs.length" class="card p-8 text-center text-ink-400">暂无日志</div>
+          <div v-else class="card overflow-hidden"><div class="overflow-y-auto max-h-[60vh]"><table><thead><tr><th class="text-left w-40">时间</th><th class="text-left w-16">级别</th><th class="text-left w-28">模块</th><th class="text-left">消息</th></tr></thead><tbody>
+            <tr v-for="l in logs" :key="l.id"><td class="font-mono text-xs text-ink-400">{{l.time_str}}</td><td><span class="badge text-xs" :class="l.level==='ERROR'?'bg-err/10 text-err':l.level==='WARN'?'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-400':l.level==='TRADE'?'bg-acc-100 text-acc-700 dark:bg-acc-900/20 dark:text-acc-300':'bg-ink-100 text-ink-500 dark:bg-ink-800'">{{l.level}}</span></td><td class="text-xs text-ink-400 font-mono">{{l.module}}</td><td class="text-xs font-mono break-all">{{l.message}}</td></tr>
+          </tbody></table></div><div class="p-2 text-xs text-ink-400 text-right border-t border-ink-100 dark:border-ink-800">共 {{logsTotal}} 条，显示最新 {{logs.length}} 条</div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 交易员弹窗 -->
+  <div v-if="showTraderModal" class="modal-overlay" @click.self="showTraderModal=false">
+    <div class="modal-box"><div class="flex items-center justify-between p-4 border-b border-ink-200 dark:border-ink-800 shrink-0"><h3 class="font-semibold">{{modalTitle}}</h3><button class="btn btn-ghost btn-sm" @click="showTraderModal=false">✕</button></div>
+      <div class="flex-1 overflow-auto p-4"><div v-if="modalLoading" class="space-y-2"><div v-for="i in 5" :key="i" class="skeleton h-5 w-full"></div></div><div v-else-if="!modalItems.length" class="text-center text-ink-400 py-8">暂无数据</div>
+      <table v-else class="text-xs num-right"><thead><tr v-if="modalMode==='orders'"><th class="text-left">时间</th><th class="text-left">币种</th><th>方向</th><th>持仓方向</th><th>数量</th><th>均价</th></tr><tr v-else><th class="text-left">币种</th><th>方向</th><th>数量</th><th>开仓时间</th><th>平仓时间</th><th>实现盈亏</th></tr></thead><tbody>
+        <tr v-if="modalMode==='orders'" v-for="o in modalItems" :key="o.orderId||o.orderTime"><td class="text-left font-mono text-ink-400">{{formatTime(o.orderTime)}}</td><td class="text-left font-medium">{{o.symbol}}</td><td><span class="badge" :class="o.side==='BUY'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{o.side}}</span></td><td><span class="badge text-ink-500 bg-ink-100 dark:bg-ink-800">{{o.positionSide}}</span></td><td>{{fNum(o.executedQty,4)}}</td><td>{{fNum(o.avgPrice)}}</td></tr>
+        <tr v-if="modalMode==='hist'" v-for="p in modalItems" :key="p.symbol+p.positionSide+p.openTime"><td class="text-left font-medium">{{p.symbol}}</td><td><span class="badge" :class="p.positionSide==='LONG'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{p.positionSide==='LONG'?'多':'空'}}</span></td><td>{{fNum(p.qty,4)}}</td><td class="font-mono text-ink-400 text-xs">{{formatTime(p.openTime)}}</td><td class="font-mono text-ink-400 text-xs">{{formatTime(p.closeTime)}}</td><td :class="p.pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(p.pnl)}}</td></tr>
+      </tbody></table></div>
+    </div>
+  </div>
+
+  <!-- 紧急全平确认弹窗 -->
+  <div v-if="showEmergencyConfirm" class="modal-overlay" @click.self="showEmergencyConfirm=false">
+    <div class="card max-w-md w-full p-6 space-y-4">
+      <h3 class="font-bold text-lg text-err">⚠️ 确认：一键紧急全平所有账户</h3>
+      <div class="text-sm text-ink-500 space-y-1"><p>此操作将：</p><ol class="list-decimal list-inside space-y-0.5"><li>立即关闭全跟单总开关</li><li>撤销全部未触发的价格条件单</li><li>各账户串行逐仓市价全平</li><li>复查残留仓位并告警</li><li><strong>不自动恢复实盘开关</strong></li></ol></div>
+      <div v-if="allPositions.length" class="max-h-40 overflow-y-auto card p-2 text-xs space-y-1"><div v-for="p in allPositions" :key="p._key" class="flex justify-between"><span>{{p.api_remark}} {{p.symbol}} {{p.position_side}}</span><span>{{fNum(p.qty,4)}}</span></div></div>
+      <div class="flex gap-2 justify-end"><button class="btn btn-ghost" @click="showEmergencyConfirm=false">取消</button><button class="btn btn-danger" @click="doEmergencyClose()" :disabled="actionLoading">{{actionLoading?'执行中…':'确认全平'}}</button></div>
+      <div v-if="emergencyResult" class="text-xs space-y-1"><div :class="emergencyResult.failed>0?'text-err':'text-ok'">已平 {{emergencyResult.closed}} 笔，失败 {{emergencyResult.failed}} 笔</div><div v-if="emergencyResult.remaining && emergencyResult.remaining.length" class="text-err">残留：{{JSON.stringify(emergencyResult.remaining)}}</div></div>
+    </div>
+  </div>
+
+  <!-- API 账户添加/编辑弹窗 -->
+  <div v-if="showAccountModal" class="modal-overlay" @click.self="showAccountModal=false">
+    <div class="card max-w-md w-full p-6 space-y-3">
+      <h3 class="font-semibold">{{editingAccount?'编辑账户':'添加账户'}}</h3>
+      <div><label class="block text-xs text-ink-400 mb-1">备注名 *</label><input v-model="accountForm.remark" class="input" /></div>
+      <div><label class="block text-xs text-ink-400 mb-1">API Key *</label><input v-model="accountForm.api_key" class="input font-mono text-xs" :placeholder="editingAccount?'留空不改':'必填'" /></div>
+      <div><label class="block text-xs text-ink-400 mb-1">API Secret *</label><input v-model="accountForm.api_secret" class="input font-mono text-xs" :placeholder="editingAccount?'留空不改':'必填'" /></div>
+      <div><label class="block text-xs text-ink-400 mb-1">跟随交易员（1对1单选）</label><select v-model="accountForm.followed_trader_id" class="select w-full"><option value="">不跟随（仅观察）</option><option v-for="t in settingsTraders" :key="t.portfolio_id" :value="t.portfolio_id">{{t.nickname}} ({{t.portfolio_id}})</option></select></div>
+      <div class="grid grid-cols-2 gap-2"><div><label class="block text-xs text-ink-400 mb-1">跟单比例</label><input v-model.number="accountForm.copy_ratio" type="number" step="0.01" min="0.01" class="input" /></div><div><label class="block text-xs text-ink-400 mb-1">默认杠杆</label><input v-model.number="accountForm.default_leverage" type="number" min="1" max="125" class="input" /></div></div>
+      <div class="flex items-center gap-2"><label class="text-sm">启用</label><input type="checkbox" v-model="accountForm.is_enabled" /></div>
+      <div v-if="accountFormErr" class="text-err text-xs">{{accountFormErr}}</div>
+      <div v-if="checkApiResult" class="card p-2 text-xs space-y-1"><div>连通：{{checkApiResult.connected?'✓':'✗'}}</div><div>合约余额：{{fNum(checkApiResult.equity)}} U</div><div :class="checkApiResult.withdraw_enabled?'text-err font-bold':'text-ok'">提现权限：{{checkApiResult.withdraw_enabled?'已开启（请关闭！）':'已关闭 ✓'}}</div></div>
+      <div class="flex gap-2 justify-end"><button class="btn btn-ghost" @click="showAccountModal=false">取消</button><button class="btn btn-primary" @click="saveAccount()" :disabled="actionLoading">{{actionLoading?'保存中…':'保存'}}</button></div>
+    </div>
+  </div>
+
+  <!-- 止盈止损弹窗 -->
+  <div v-if="showTpSlModal" class="modal-overlay" @click.self="showTpSlModal=false">
+    <div class="card max-w-sm w-full p-6 space-y-3">
+      <h3 class="font-semibold">设置止盈/止损 — {{tpSlTarget?.symbol}} {{tpSlTarget?.position_side}}</h3>
+      <div><label class="block text-xs text-ink-400 mb-1">止盈价格（留空=不设）</label><input v-model.number="tpSlForm.tp_price" type="number" step="0.01" class="input" /></div>
+      <div><label class="block text-xs text-ink-400 mb-1">止损价格（留空=不设）</label><input v-model.number="tpSlForm.sl_price" type="number" step="0.01" class="input" /></div>
+      <div class="flex gap-2 justify-end"><button class="btn btn-ghost" @click="showTpSlModal=false">取消</button><button class="btn btn-primary" @click="setTpSl()" :disabled="actionLoading">确认</button></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const { createApp, reactive, ref, computed, onMounted, onUnmounted, watch } = Vue;
+createApp({
+  setup() {
+    const menus = [
+      { id:'overview', icon:'📊', label:'账户总览' }, { id:'monitor', icon:'📡', label:'交易员监控' },
+      { id:'positions', icon:'📌', label:'仓位与订单' }, { id:'settings', icon:'⚙️', label:'功能设置' }, { id:'logs', icon:'📄', label:'日志' },
+    ];
+    const currentMenu = ref('overview');
+    const currentLabel = computed(() => menus.find(m => m.id === currentMenu.value)?.label || '');
+    const authed = ref(!!localStorage.getItem('token')); const token = ref(localStorage.getItem('token') || '');
+    const loginForm = reactive({ username:'', password:'' }); const loggingIn = ref(false); const loginErr = ref('');
+    const systemOnline = ref(true); const liveEnabled = ref(false); const wsConnected = ref(false); const darkTheme = ref(localStorage.getItem('theme')==='dark');
+    const actionLoading = ref(false);
+
+    // 账户/交易员/仓位/订单
+    const accounts = ref([]); const accountsLoading = ref(false); const accountsErr = ref('');
+    const traders = ref([]); const tradersLoading = ref(false); const tradersErr = ref('');
+    const allPositions = ref([]); const posLoading = ref(false); const posErr = ref('');
+    const copyOrders = ref([]); const copyOrdersLoading = ref(false); const copyOrdersOffset = ref(0);
+
+    // 设置页
+    const settingsAccounts = ref([]); const settingsAccountsLoading = ref(false);
+    const settingsTraders = ref([]);
+    const showAccountModal = ref(false); const editingAccount = ref(null);
+    const accountForm = reactive({ remark:'', api_key:'', api_secret:'', copy_ratio:1.0, default_leverage:10, is_enabled:true, followed_trader_id:'' });
+    const accountFormErr = ref(''); const checkApiResult = ref(null);
+    const addTraderInput = ref(''); const addTraderMsg = ref(''); const addTraderOk = ref(false); const addTraderBusy = ref(false);
+    const proxies = ref([]); const proxyBulkInput = ref(''); const checkAllRunning = ref(false);
+    const pollTg = reactive({ poll_interval_sec:2.5, tg_bot_token:'', tg_chat_id:'', tg_enabled:false });
+    const tgTestMsg = ref(''); const tgTestOk = ref(false);
+
+    // 日志
+    const logs = ref([]); const logsTotal = ref(0); const logsLoading = ref(false); const logsErr = ref('');
+    const logFilter = reactive({ level:'', keyword:'', limit:100, offset:0 }); const logRetDays = ref(7);
+    let logsTimer = null; let logDebounceTimer = null;
+
+    // 弹窗
+    const showTraderModal = ref(false); const modalTitle = ref(''); const modalMode = ref('orders'); const modalItems = ref([]); const modalLoading = ref(false);
+    const showEmergencyConfirm = ref(false); const emergencyResult = ref(null);
+    const showTpSlModal = ref(false); const tpSlTarget = ref(null); const tpSlForm = reactive({ tp_price:null, sl_price:null });
+
+    // 汇总
+    const sumEquity = computed(() => accounts.value.reduce((s,a)=>s+(+a.cached_equity||0),0));
+    const sumAvail = computed(() => accounts.value.reduce((s,a)=>s+(+a.cached_available||0),0));
+    const sumPosVal = computed(() => accounts.value.reduce((s,a)=>s+(a._posVal||0),0));
+    const sumUPnl = computed(() => accounts.value.reduce((s,a)=>s+(a._uPnl||0),0));
+    const sumRealized = computed(() => accounts.value.reduce((s,a)=>s+(+a.realized_pnl||0),0));
+    const theoryFreq = computed(() => { const n = proxies.value.length||1; const beat = pollTg.poll_interval_sec||2.5; return Math.min(n/2.05, 1/beat).toFixed(2); });
+    const pollFreqWarn = computed(() => { const n = proxies.value.length; const beat = pollTg.poll_interval_sec||2.5; if (!n) return ''; return (1/beat) > (n/2.05) ? '节拍比代理额度快，建议增加代理' : ''; });
+
+    function fNum(n, dec=2) { return n==null?'--':Number(n).toFixed(dec); }
+    function fPct(n) { return n==null?'--':(Number(n)*100).toFixed(2)+'%'; }
+    function formatTime(ms) { if (!ms) return '--'; const ts = typeof ms==='string'?Date.parse(ms):Number(ms); if (!ts) return '--'; return new Date(ts+8*3600000).toISOString().replace('T',' ').slice(0,19); }
+    function slippage(o) { if (!o.trader_price||!o.my_price||+o.trader_price===0) return 0; return ((+o.my_price-+o.trader_price)/+o.trader_price)*100; }
+
+    async function apiFetch(url, opts={}) {
+      const sep = url.includes('?')?'&':'?';
+      const r = await fetch(`${url}${sep}token=${token.value}`, { headers:{'Content-Type':'application/json' }, ...opts });
+      if (r.status===401) { authed.value=false; throw new Error('未登录'); }
+      if (!r.ok) { const t = await r.text().catch(()=>''); throw new Error(`HTTP ${r.status} ${t}`); }
+      return r.json();
+    }
+
+    const needSetup = ref(false); const setupConfirm = ref('');
+    async function checkSetup() { try { const r = await fetch('/api/setup-status'); if (r.ok) needSetup.value = !!(await r.json()).need_setup; } catch(e) {} }
+    async function doSetup() {
+      loginErr.value='';
+      if (loginForm.password.length < 8) { loginErr.value='密码至少 8 位'; return; }
+      if (loginForm.password !== setupConfirm.value) { loginErr.value='两次输入的密码不一致'; return; }
+      loggingIn.value=true;
+      try {
+        const d = await fetch('/api/setup', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:loginForm.username||'admin', password:loginForm.password}) });
+        if (!d.ok) { let msg='设置失败'; try { msg=(await d.json()).detail||msg; } catch(e) {} loginErr.value=msg; return; }
+        const j = await d.json(); token.value=j.token; localStorage.setItem('token',j.token); needSetup.value=false; setupConfirm.value=''; authed.value=true; connectWs(); loadConfig(); loadAccounts(); loadTraders();
+      } catch(e) { loginErr.value='网络异常：'+e.message; } finally { loggingIn.value=false; }
+    }
+    async function doLogin() {
+      loginErr.value=''; loggingIn.value=true;
+      try {
+        const d = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(loginForm) });
+        if (!d.ok) { const t = await d.text().catch(()=>''); loginErr.value='账号或密码错误'; return; }
+        const j = await d.json(); token.value=j.token; localStorage.setItem('token',j.token); authed.value=true; connectWs(); loadConfig(); loadAccounts(); loadTraders();
+      } catch(e) { loginErr.value='网络异常：'+e.message; } finally { loggingIn.value=false; }
+    }
+    function toggleTheme() { darkTheme.value=!darkTheme.value; document.documentElement.classList.toggle('dark', darkTheme.value); localStorage.setItem('theme', darkTheme.value?'dark':'light'); }
+
+    let ws = null;
+    function connectWs() {
+      const proto = location.protocol==='https:'?'wss':'ws';
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.onopen = () => { wsConnected.value=true; };
+      ws.onclose = () => { wsConnected.value=false; setTimeout(connectWs, 4000); };
+      ws.onerror = () => { wsConnected.value=false; };
+      ws.onmessage = (ev) => { try { const m=JSON.parse(ev.data);
+        if (m.type==='log') { logs.value.unshift(m); if (logs.value.length>500) logs.value.length=500; }
+        else if (m.type==='account_update') { const idx=accounts.value.findIndex(a=>a.id===m.id); if (idx!==-1) Object.assign(accounts.value[idx], m); }
+        else if (m.type==='trader_update') { const t=traders.value.find(t=>t.portfolio_id===m.portfolio_id); if (t) t.last_sync_ts=m.last_sync_ts; }
+        else if (m.type==='position_update') { const t=traders.value.find(t=>t.portfolio_id===m.portfolio_id); if (t&&m.positions) { t.hidden_positions_json=JSON.stringify(m.positions); t._positions=m.positions; } }
+      } catch(e) {} };
+    }
+
+    async function loadConfig() { try { const cfg=await apiFetch('/api/config'); liveEnabled.value=!!cfg.live_trading_enabled; logRetDays.value=cfg.log_retention_days||7; } catch(e) {} }
+    async function toggleLiveTrading() {
+      if (!liveEnabled.value) { if (!confirm('确认开启实盘跟单？请确保已配置 API、交易员、代理并验证无误。')) return; }
+      try { const r = await apiFetch('/api/system/live-toggle', { method:'PUT', body:JSON.stringify({live_trading_enabled: !liveEnabled.value}) }); liveEnabled.value = r.live_trading_enabled; } catch(e) { alert('切换失败：'+e.message); }
+    }
+
+    async function loadAccounts() { accountsLoading.value=true; accountsErr.value=''; try {
+      const data = await apiFetch('/api/accounts');
+      accounts.value = await Promise.all(data.map(async acc => { try { const pos=await apiFetch(`/api/accounts/${acc.id}/positions`); const posVal=pos.reduce((s,p)=>s+(+p.qty||0)*(+p.mark_price||+p.avg_price||0),0); const uPnl=pos.reduce((s,p)=>s+(+p.unrealized_pnl||0),0); const uPnlPct=acc.cached_equity?uPnl/+acc.cached_equity:0; return {...acc, _positions:pos, _posVal:posVal, _uPnl:uPnl, _uPnlPct:uPnlPct}; } catch(e) { return {...acc, _positions:[], _posVal:0, _uPnl:0, _uPnlPct:0}; } }));
+    } catch(e) { accountsErr.value='加载失败：'+e.message; } finally { accountsLoading.value=false; } }
+
+    async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; try {
+      const data = await apiFetch('/api/traders'); traders.value = data.map(t => { let pos={}; try { pos=JSON.parse(t.hidden_positions_json||'{}'); } catch(e) {} return {...t, _positions:pos}; });
+    } catch(e) { tradersErr.value='加载失败：'+e.message; } finally { tradersLoading.value=false; } }
+
+    async function loadAllPositions() { posLoading.value=true; posErr.value=''; try {
+      if (!accounts.value.length) await loadAccounts(); const all=[];
+      await Promise.all(accounts.value.map(async acc => { try { const pos=await apiFetch(`/api/accounts/${acc.id}/positions`); pos.forEach(p => all.push({...p, _key:`${acc.id}-${p.symbol}-${p.position_side}`, api_remark:acc.remark})); } catch(e) {} }));
+      allPositions.value=all;
+    } catch(e) { posErr.value='加载失败：'+e.message; } finally { posLoading.value=false; } }
+    async function loadCopyOrders() { copyOrdersLoading.value=true; try { const data=await apiFetch(`/api/copy-orders?limit=50&offset=${copyOrdersOffset.value}`); if (copyOrdersOffset.value===0) copyOrders.value=data; else copyOrders.value.push(...data); } catch(e) {} finally { copyOrdersLoading.value=false; } }
+    function loadMoreOrders() { copyOrdersOffset.value+=50; loadCopyOrders(); }
+
+    async function loadLogs() { logsLoading.value=true; logsErr.value=''; try {
+      const qs=new URLSearchParams({ level:logFilter.level, keyword:logFilter.keyword, limit:logFilter.limit, offset:0 }).toString();
+      const res=await apiFetch(`/api/logs?${qs}`); logs.value=res.items||res; logsTotal.value=res.total||logs.value.length;
+    } catch(e) { logsErr.value='加载失败：'+e.message; } finally { logsLoading.value=false; } }
+    function debounceLogs() { clearTimeout(logDebounceTimer); logDebounceTimer=setTimeout(loadLogs, 300); }
+    async function saveLogRetention() { try { await apiFetch('/api/config', { method:'PUT', body:JSON.stringify({ log_retention_days: logRetDays.value }) }); } catch(e) {} }
+
+    async function openTraderModal(t, mode) { modalMode.value=mode; modalTitle.value=mode==='orders'?`近期操作 - ${t.nickname}`:`历史仓位 - ${t.nickname}`; modalItems.value=[]; showTraderModal.value=true; modalLoading.value=true; try { const url=mode==='orders'?`/api/traders/${t.portfolio_id}/orders`:`/api/traders/${t.portfolio_id}/positions-hist`; modalItems.value=await apiFetch(url); } catch(e) {} finally { modalLoading.value=false; } }
+
+    function traderName(pid) { if (!pid) return '--'; const t=traders.value.find(t=>t.portfolio_id===pid); return t?(t.nickname||pid):pid; }
+    function followingAccounts(pid) { return accounts.value.filter(a=>a.followed_trader_id===pid); }
+    function traderPositionList(t) { const pos=t._positions||{}; const r=[]; for (const [s,sides] of Object.entries(pos)) for (const [side,d] of Object.entries(sides)) if (d&&d.qty>0) r.push({symbol:s,side,qty:d.qty,avg_price:d.avg_price}); return r; }
+    function traderPosValue(t) { return traderPositionList(t).reduce((s,p)=>s+p.qty*p.avg_price,0); }
+    function traderLeverage(t) { const v=traderPosValue(t); const m=+t.margin_balance||0; return m?fNum(v/m,1):'--'; }
+    function traderLongPct(t) { const l=traderPositionList(t); const lv=l.filter(p=>p.side==='LONG').reduce((s,p)=>s+p.qty*p.avg_price,0); const sv=l.filter(p=>p.side==='SHORT').reduce((s,p)=>s+p.qty*p.avg_price,0); const t2=lv+sv; return t2?Math.round(lv/t2*100):50; }
+
+    // ── 设置页：API 账户 ──
+    async function loadSettingsAccounts() { settingsAccountsLoading.value=true; try { settingsAccounts.value=await apiFetch('/api/settings/api-accounts'); } catch(e) {} finally { settingsAccountsLoading.value=false; } }
+    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:''}); checkApiResult.value=null; accountFormErr.value=''; showAccountModal.value=true; }
+    function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||''}); checkApiResult.value=null; accountFormErr.value=''; showAccountModal.value=true; }
+    async function saveAccount() {
+      accountFormErr.value=''; if (!accountForm.remark.trim()) { accountFormErr.value='备注名必填'; return; }
+      if (!editingAccount.value && (!accountForm.api_key.trim()||!accountForm.api_secret.trim())) { accountFormErr.value='新增时 API Key 和 Secret 必填'; return; }
+      actionLoading.value=true; try {
+        const body={...accountForm}; if (editingAccount.value) body.id=editingAccount.value.id; if (!body.api_key) delete body.api_key; if (!body.api_secret) delete body.api_secret;
+        await apiFetch('/api/settings/api-accounts', { method:'POST', body:JSON.stringify(body) });
+        showAccountModal.value=false; await loadSettingsAccounts();
+      } catch(e) { accountFormErr.value='保存失败：'+e.message; } finally { actionLoading.value=false; }
+    }
+    async function deleteAccount(id) { if (!confirm('确认删除此 API 账户？')) return; try { await apiFetch(`/api/settings/api-accounts/${id}`, {method:'DELETE'}); await loadSettingsAccounts(); } catch(e) { alert('删除失败：'+e.message); } }
+    async function checkApi(id) { actionLoading.value=true; try { checkApiResult.value=await apiFetch(`/api/settings/api-accounts/${id}/check`, {method:'POST'}); if (!showAccountModal.value) { showAccountModal.value=false; } } catch(e) { alert('检测失败：'+e.message); } finally { actionLoading.value=false; } }
+
+    // ── 设置页：交易员 ──
+    async function loadSettingsTraders() { try { settingsTraders.value=await apiFetch('/api/settings/traders'); } catch(e) {} }
+    async function addTrader() {
+      if (!addTraderInput.value.trim() || addTraderBusy.value) return;
+      addTraderMsg.value=''; addTraderBusy.value=true;
+      try {
+        const r=await apiFetch('/api/settings/traders', { method:'POST', body:JSON.stringify({portfolio_id:addTraderInput.value.trim()}) });
+        if (r.initialized) {
+          addTraderOk.value=true;
+          addTraderMsg.value=`抓取成功：${r.nickname}，保证金 ${fNum(r.margin_balance)} U，推算持仓 ${r.positions} 个（底账 ${r.orders??'--'} 条）`;
+          addTraderInput.value='';
+        } else {
+          addTraderOk.value=false; addTraderMsg.value=r.message||'已加入，但底账初始化失败';
+        }
+        await loadSettingsTraders(); await loadTraders();
+      } catch(e) { addTraderOk.value=false; addTraderMsg.value='添加失败：'+e.message; }
+      finally { addTraderBusy.value=false; }
+    }
+    async function deleteTrader(pid) { if (!confirm('确认移除此交易员？')) return; try { await apiFetch(`/api/settings/traders/${pid}`, {method:'DELETE'}); await loadSettingsTraders(); } catch(e) { alert('移除失败：'+e.message); } }
+    async function resetTrader(pid) { try {
+      const r=await apiFetch(`/api/settings/traders/${pid}/reset`, {method:'POST'});
+      if (r.initialized) alert(`已重置并重建底账：${r.nickname}，保证金 ${fNum(r.margin_balance)} U，推算持仓 ${r.positions} 个（底账 ${r.orders??'--'} 条）`);
+      else alert(r.message||'已重置，但底账重建失败');
+      await loadSettingsTraders(); await loadTraders(); await loadProxies();
+    } catch(e) { alert('重置失败：'+e.message); } }
+
+    // ── 设置页：代理 ──
+    async function loadProxies() { try { proxies.value=await apiFetch('/api/settings/proxies'); } catch(e) {} }
+    async function addProxies() { if (!proxyBulkInput.value.trim()) return; try { await apiFetch('/api/settings/proxies', {method:'POST', body:JSON.stringify({proxies:proxyBulkInput.value})}); proxyBulkInput.value=''; await loadProxies(); } catch(e) { alert('添加失败：'+e.message); } }
+    async function checkProxy(id) { try { await apiFetch(`/api/settings/proxies/${id}/check`, {method:'POST'}); await loadProxies(); } catch(e) { alert('检测失败：'+e.message); } }
+    async function checkAllProxies() { checkAllRunning.value=true; try { await apiFetch('/api/settings/proxies/check-all', {method:'POST'}); setTimeout(()=>{ loadProxies(); checkAllRunning.value=false; }, 3000); } catch(e) { alert('检测失败：'+e.message); checkAllRunning.value=false; } }
+    async function deleteProxy(id) { if (!confirm('确认删除此代理？')) return; try { await apiFetch(`/api/settings/proxies/${id}`, {method:'DELETE'}); await loadProxies(); } catch(e) { alert('删除失败：'+e.message); } }
+
+    // ── 设置页：轮询+TG ──
+    async function loadPollTg() { try { const r=await apiFetch('/api/settings/poll-tg'); Object.assign(pollTg, r); } catch(e) {} }
+    async function savePollTg() { try { await apiFetch('/api/settings/poll-tg', {method:'PUT', body:JSON.stringify(pollTg)}); alert('已保存'); } catch(e) { alert('保存失败：'+e.message); } }
+    async function testTg() { tgTestMsg.value=''; try { await apiFetch('/api/settings/tg/test', {method:'POST'}); tgTestOk.value=true; tgTestMsg.value='测试通知已发送'; } catch(e) { tgTestOk.value=false; tgTestMsg.value='发送失败：'+e.message; } }
+
+    // ── 仓位操作 ──
+    function posBody(p, extra={}) { return JSON.stringify({account_id:p.account_id, symbol:p.symbol, position_side:p.position_side, ...extra}); }
+    async function manualCloseHalf(p) { if (!confirm(`确认平半 ${p.symbol} ${p.position_side} ${fNum(p.qty,4)}？`)) return; actionLoading.value=true; try { await apiFetch('/api/position/close-half', {method:'POST', body:posBody(p)}); await loadAllPositions(); } catch(e) { alert('平半失败：'+e.message); } finally { actionLoading.value=false; } }
+    async function manualCloseAll(p) { if (!confirm(`确认全平 ${p.symbol} ${p.position_side} ${fNum(p.qty,4)}？`)) return; actionLoading.value=true; try { await apiFetch('/api/position/close-all', {method:'POST', body:posBody(p)}); await loadAllPositions(); } catch(e) { alert('全平失败：'+e.message); } finally { actionLoading.value=false; } }
+    function openTpSl(p) { tpSlTarget.value=p; tpSlForm.tp_price=null; tpSlForm.sl_price=null; showTpSlModal.value=true; }
+    async function setTpSl() { actionLoading.value=true; try { await apiFetch('/api/position/tp-sl', {method:'POST', body:posBody(tpSlTarget.value,{tp_price:tpSlForm.tp_price||null, sl_price:tpSlForm.sl_price||null})}); showTpSlModal.value=false; await loadAllPositions(); } catch(e) { alert('设置失败：'+e.message); } finally { actionLoading.value=false; } }
+    async function manualResume(p) { if (!confirm(`确认解除 ${p.symbol} ${p.position_side} 的接管，恢复自动跟单？`)) return; actionLoading.value=true; try { await apiFetch('/api/position/resume', {method:'POST', body:posBody(p)}); await loadAllPositions(); } catch(e) { alert('解除失败：'+e.message); } finally { actionLoading.value=false; } }
+
+    // ── 紧急全平 ──
+    function confirmEmergencyClose() { emergencyResult.value=null; showEmergencyConfirm.value=true; }
+    async function doEmergencyClose() { actionLoading.value=true; try { emergencyResult.value=await apiFetch('/api/system/emergency-close-all', {method:'POST'}); liveEnabled.value=false; await loadAllPositions(); } catch(e) { alert('紧急全平失败：'+e.message); } finally { actionLoading.value=false; } }
+
+    function switchMenu(id) { currentMenu.value=id; }
+    watch(currentMenu, (val) => {
+      if (val==='overview') loadAccounts();
+      if (val==='monitor') loadTraders();
+      if (val==='positions') { loadAllPositions(); loadCopyOrders(); }
+      if (val==='logs') loadLogs();
+      if (val==='settings') { loadSettingsAccounts(); loadSettingsTraders(); loadProxies(); loadPollTg(); }
+    });
+
+    onMounted(() => {
+      document.documentElement.classList.toggle('dark', darkTheme.value);
+      checkSetup();
+      if (authed.value) { connectWs(); loadConfig(); loadAccounts(); loadTraders(); loadSettingsTraders();
+        logsTimer=setInterval(() => { if (currentMenu.value==='logs') loadLogs(); }, 30000);
+        fetch('/api/health').then(r=>r.json()).then(d=>{systemOnline.value=d.status==='ok';}).catch(()=>{systemOnline.value=false;});
+      }
+    });
+    onUnmounted(() => { clearInterval(logsTimer); clearTimeout(logDebounceTimer); if (ws) ws.close(); });
+
+    return {
+      menus, currentMenu, currentLabel, switchMenu, authed, loginForm, loggingIn, loginErr, doLogin, needSetup, setupConfirm, doSetup,
+      systemOnline, liveEnabled, wsConnected, darkTheme, toggleTheme, toggleLiveTrading,
+      accounts, accountsLoading, accountsErr, loadAccounts, traders, tradersLoading, tradersErr, loadTraders,
+      allPositions, posLoading, posErr, loadAllPositions, copyOrders, copyOrdersLoading, loadMoreOrders,
+      sumEquity, sumAvail, sumPosVal, sumUPnl, sumRealized,
+      traderName, followingAccounts, traderPositionList, traderPosValue, traderLeverage, traderLongPct, slippage,
+      logs, logsTotal, logsLoading, logsErr, logFilter, logRetDays, loadLogs, debounceLogs, saveLogRetention,
+      showTraderModal, modalTitle, modalMode, modalItems, modalLoading, openTraderModal,
+      showEmergencyConfirm, confirmEmergencyClose, doEmergencyClose, emergencyResult, actionLoading,
+      settingsAccounts, settingsAccountsLoading, showAccountModal, editingAccount, accountForm, accountFormErr, checkApiResult,
+      openAddAccount, openEditAccount, saveAccount, deleteAccount, checkApi,
+      settingsTraders, addTraderInput, addTraderMsg, addTraderOk, addTrader, addTraderBusy, deleteTrader, resetTrader,
+      proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, theoryFreq, pollFreqWarn,
+      pollTg, savePollTg, testTg, tgTestMsg, tgTestOk,
+      showTpSlModal, tpSlTarget, tpSlForm, openTpSl, setTpSl,
+      manualCloseHalf, manualCloseAll, manualResume,
+      fNum, fPct, formatTime,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# 构建上下文瘦身，并防止运行时数据 / 密钥进入镜像
+data/
+**/__pycache__/
+**/*.pyc
+.git/
+.gitignore
+.env
+*.log
+
+# 部署脚本与文档不参与运行镜像
+install.sh
+update.sh
+docker-compose.yml
+开发文档.md
