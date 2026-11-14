@@ -254,7 +254,9 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
                     if not live:
                         db.insert_log("INFO","executor",f"[模拟] 开仓账户 {aid} {symbol} qty={qty}"); _insert_copy(account,signal,"OPEN",qty,price,"SKIPPED","SIMULATED"); continue
                     side="buy" if signal["position_side"]=="LONG" else "sell"
-                    order=client.create_order(symbol,"market",side,qty,None,{"positionSide":signal["position_side"]}); _insert_copy(account,signal,"OPEN",qty,float(order.get("average") or price),"SUCCESS"); notifier.notify("trade_open",f"跟单开仓 {symbol} 数量 {qty}")
+                    # newOrderRespType=RESULT：市价单默认只回 ACK（average 为空），
+                    # 那样入库的"我方均价"会退化成交员价，滑点恒为 0（2026-11-15 用户发现）
+                    order=client.create_order(symbol,"market",side,qty,None,{"positionSide":signal["position_side"],"newOrderRespType":"RESULT"}); _insert_copy(account,signal,"OPEN",qty,float(order.get("average") or price),"SUCCESS"); notifier.notify("trade_open",f"跟单开仓 {symbol} 数量 {qty}")
                 else:
                     # 铁律 4：只用采集侧写入事件的平仓前持仓，禁止回读推算持仓倒推。
                     trader_close=float(signal["executed_qty"]); pre=signal.get("pre_close_qty")
@@ -267,7 +269,7 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
                     if qty<=0: _insert_copy(account,signal,"CLOSE",0,price,"SKIPPED","NO_POSITION"); continue
                     if not live:
                         db.insert_log("INFO","executor",f"[模拟] 平仓账户 {aid} {symbol} qty={qty}"); _insert_copy(account,signal,"CLOSE",qty,price,"SKIPPED","SIMULATED"); continue
-                    side="sell" if signal["position_side"]=="LONG" else "buy"; order=client.create_order(symbol,"market",side,qty,None,{"positionSide":signal["position_side"]}); _insert_copy(account,signal,"CLOSE",qty,float(order.get("average") or price),"SUCCESS"); notifier.notify("trade_close",f"跟单平仓 {symbol} 数量 {qty}")
+                    side="sell" if signal["position_side"]=="LONG" else "buy"; order=client.create_order(symbol,"market",side,qty,None,{"positionSide":signal["position_side"],"newOrderRespType":"RESULT"}); _insert_copy(account,signal,"CLOSE",qty,float(order.get("average") or price),"SUCCESS"); notifier.notify("trade_close",f"跟单平仓 {symbol} 数量 {qty}")
                     if ratio>=.98:
                         # 我方该币种方向已全平 → 撤掉残留的价格条件单（文档 5.4）
                         _cancel_conditional_orders(client,symbol,signal["position_side"])
@@ -314,7 +316,7 @@ def close_position(account_id: int, symbol: str, position_side: str, fraction: f
     if qty<=0:
         db.insert_log("WARN","executor",f"手动平仓未找到持仓：{symbol} {side}（账户 {account_id}，fraction={fraction}），未下单")
         return {"ok":True,"closed":0,"simulated":False,"warning":"未找到该币种方向的持仓，未下单"}
-    order=client.create_order(sym,"market","sell" if side=="LONG" else "buy",qty,None,{"positionSide":side})
+    order=client.create_order(sym,"market","sell" if side=="LONG" else "buy",qty,None,{"positionSide":side,"newOrderRespType":"RESULT"})
     _override(db.get_conn(),account_id,portfolio_id,symbol,side)
     if fraction>=1:
         # 全平成交后撤掉残留的价格条件单（文档 5.4）
@@ -377,7 +379,7 @@ def emergency_close_all(ccxt_clients: dict,ws_broadcast_fn,config_getter) -> dic
         for pos in positions:
             sym=pos.get("symbol"); side=str(pos.get("side") or "LONG").upper(); qty=abs(float(pos.get("contracts") or pos.get("info",{}).get("positionAmt") or 0))
             try:
-                client.create_order(sym,"market","sell" if side=="LONG" else "buy",float(client.amount_to_precision(sym,qty)),None,{"positionSide":side}); closed+=1
+                client.create_order(sym,"market","sell" if side=="LONG" else "buy",float(client.amount_to_precision(sym,qty)),None,{"positionSide":side,"newOrderRespType":"RESULT"}); closed+=1
                 _override(db.get_conn(),int(aid),"",sym,side); time.sleep(.1)
             except Exception as exc:
                 failed+=1; remaining.append({"account_id":aid,"symbol":sym,"error":str(exc)}); db.insert_log("ERROR","executor",f"紧急平仓失败 {aid} {sym}: {exc}"); notifier.notify("emergency_close",str(exc),force=True)
