@@ -591,16 +591,29 @@ async def settings_traders(token: str | None=None): return await traders(token)
 
 
 def _portfolio_id_from(raw: str) -> str:
-    """从带单主页 URL 或纯 portfolioId 中提取 ID。"""
+    """从带单主页 URL 或纯 portfolioId 中提取 ID。
+
+    兼容的链接形态（2026-11-14 实测）：
+      https://www.binance.com/zh-CN/copy-trading/lead-details/5075281354358777856?timeRange=7D
+      https://www.binance.com/zh-CN/copy-trading/portfolio/<id>
+      https://www.binance.com/...?portfolioId=<id>
+    以及纯 portfolioId。兜底取路径里最后一段纯数字。
+    """
     if "http" not in raw:
         return raw
     parsed = urlparse(raw)
     query = parse_qs(parsed.query)
-    pid = (query.get("portfolioId") or query.get("portfolio_id") or [""])[0]
-    if not pid:
-        match = re.search(r"/portfolio/([A-Za-z0-9_-]+)", parsed.path)
-        pid = match.group(1) if match else ""
-    return pid
+    for key in ("portfolioId", "portfolio_id", "leadPortfolioId"):
+        values = query.get(key)
+        if values and values[0].strip():
+            return values[0].strip()
+    match = re.search(r"/(?:lead-details|leadDetails|portfolio)/([A-Za-z0-9_-]+)", parsed.path)
+    if match:
+        return match.group(1)
+    for segment in reversed([s for s in parsed.path.split("/") if s]):
+        if segment.isdigit():
+            return segment
+    return ""
 
 
 @app.post("/api/settings/traders")

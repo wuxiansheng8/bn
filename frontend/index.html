@@ -319,8 +319,8 @@ createApp({
     const sumPosVal = computed(() => accounts.value.reduce((s,a)=>s+(a._posVal||0),0));
     const sumUPnl = computed(() => accounts.value.reduce((s,a)=>s+(a._uPnl||0),0));
     const sumRealized = computed(() => accounts.value.reduce((s,a)=>s+(+a.realized_pnl||0),0));
-    const theoryFreq = computed(() => { const n = proxies.value.length||1; const beat = pollTg.poll_interval_sec||2.5; return Math.min(n/2.05, 1/beat).toFixed(2); });
-    const pollFreqWarn = computed(() => { const n = proxies.value.length; const beat = pollTg.poll_interval_sec||2.5; if (!n) return ''; return (1/beat) > (n/2.05) ? '节拍比代理额度快，建议增加代理' : ''; });
+    const theoryFreq = computed(() => { const n = proxies.value.length; if (!n) return '0.00'; const beat = pollTg.poll_interval_sec||2.5; return Math.min(n/2.05, 1/beat).toFixed(2); });
+    const pollFreqWarn = computed(() => { const n = proxies.value.length; if (!n) return '还没有代理节点，系统无法采集'; const beat = pollTg.poll_interval_sec||2.5; return (1/beat) > (n/2.05) ? '节拍比代理额度快，建议增加代理' : ''; });
 
     function fNum(n, dec=2) { return n==null?'--':Number(n).toFixed(dec); }
     function fPct(n) { return n==null?'--':(Number(n)*100).toFixed(2)+'%'; }
