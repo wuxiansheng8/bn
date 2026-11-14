@@ -79,8 +79,8 @@
               </div>
               <div class="text-xs text-ink-400">跟随：{{traderName(acc.followed_trader_id)}}</div>
               <div class="grid grid-cols-2 gap-2 text-xs">
-                <div><span class="text-ink-400">净值</span> <span class="font-medium">{{fNum(acc.cached_equity)}} U</span></div>
-                <div><span class="text-ink-400">可用</span> <span class="font-medium">{{fNum(acc.cached_available)}} U</span></div>
+                <div><span class="text-ink-400">净值</span> <span class="font-medium">{{fNum((+acc.cached_equity||0)+(acc._uPnl||0))}} U</span></div>
+                <div><span class="text-ink-400">可用</span> <span class="font-medium">{{fNum(acc.cached_available)}} U</span><span class="text-ink-400 ml-1">{{acc.updated_at?'('+formatTime(acc.updated_at*1000).slice(11)+')':''}}</span></div>
                 <div><span class="text-ink-400">持仓数</span> <span class="font-medium">{{(acc._positions||[]).length}}</span></div>
                 <div><span class="text-ink-400">持仓价值</span> <span class="font-medium">{{fNum(acc._posVal)}} U</span></div>
                 <div><span class="text-ink-400">浮盈亏</span> <span class="font-medium" :class="acc._uPnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc._uPnl)}} U ({{fPct(acc._uPnlPct)}})</span></div>
@@ -331,7 +331,7 @@ createApp({
     const showTpSlModal = ref(false); const tpSlTarget = ref(null); const tpSlForm = reactive({ tp_price:null, sl_price:null });
 
     // 汇总
-    const sumEquity = computed(() => accounts.value.reduce((s,a)=>s+(+a.cached_equity||0),0));
+    const sumEquity = computed(() => accounts.value.reduce((s,a)=>s+(+a.cached_equity||0)+(a._uPnl||0),0));
     const sumAvail = computed(() => accounts.value.reduce((s,a)=>s+(+a.cached_available||0),0));
     const sumPosVal = computed(() => accounts.value.reduce((s,a)=>s+(a._posVal||0),0));
     const sumUPnl = computed(() => accounts.value.reduce((s,a)=>s+(a._uPnl||0),0));

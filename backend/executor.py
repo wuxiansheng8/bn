@@ -217,6 +217,19 @@ def _cancel_conditional_orders(client, symbol: str, position_side: str) -> int:
     return cancelled
 
 
+def _refresh_equity_cache(account_id: int) -> None:
+    """平仓后刷新账户余额缓存（方案 A），避免页面停在"仓位还在时"的旧数值。"""
+    client = _clients.get(account_id)
+    if not client: return
+    try:
+        equity, available = _account_equity(client)
+        conn = db.get_conn()
+        conn.execute("UPDATE api_accounts SET cached_equity=?, cached_available=?, updated_at=? WHERE id=?",
+                     (equity, available, int(time.time()), account_id))
+        conn.commit()
+    except Exception as exc:
+        db.insert_log("WARN", "executor", f"刷新账户余额缓存失败 {account_id}: {exc}")
+
 def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
     try:
         required=("portfolio_id","symbol","position_side","executed_qty","avg_price","is_open")
@@ -269,7 +282,7 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
                     if qty<=0: _insert_copy(account,signal,"CLOSE",0,price,"SKIPPED","NO_POSITION"); continue
                     if not live:
                         db.insert_log("INFO","executor",f"[模拟] 平仓账户 {aid} {symbol} qty={qty}"); _insert_copy(account,signal,"CLOSE",qty,price,"SKIPPED","SIMULATED"); continue
-                    side="sell" if signal["position_side"]=="LONG" else "buy"; order=client.create_order(symbol,"market",side,qty,None,{"positionSide":signal["position_side"],"newOrderRespType":"RESULT"}); _insert_copy(account,signal,"CLOSE",qty,float(order.get("average") or price),"SUCCESS"); notifier.notify("trade_close",f"跟单平仓 {symbol} 数量 {qty}")
+                    side="sell" if signal["position_side"]=="LONG" else "buy"; order=client.create_order(symbol,"market",side,qty,None,{"positionSide":signal["position_side"],"newOrderRespType":"RESULT"}); _insert_copy(account,signal,"CLOSE",qty,float(order.get("average") or price),"SUCCESS"); notifier.notify("trade_close",f"跟单平仓 {symbol} 数量 {qty}"); _refresh_equity_cache(aid)
                     if ratio>=.98:
                         # 我方该币种方向已全平 → 撤掉残留的价格条件单（文档 5.4）
                         _cancel_conditional_orders(client,symbol,signal["position_side"])
@@ -318,6 +331,7 @@ def close_position(account_id: int, symbol: str, position_side: str, fraction: f
         return {"ok":True,"closed":0,"simulated":False,"warning":"未找到该币种方向的持仓，未下单"}
     order=client.create_order(sym,"market","sell" if side=="LONG" else "buy",qty,None,{"positionSide":side,"newOrderRespType":"RESULT"})
     _override(db.get_conn(),account_id,portfolio_id,symbol,side)
+    _refresh_equity_cache(account_id)
     if fraction>=1:
         # 全平成交后撤掉残留的价格条件单（文档 5.4）
         _cancel_conditional_orders(client,sym,side)

@@ -339,6 +339,7 @@ def _account_json(row) -> dict:
             "followed_trader_id": row["followed_trader_id"],
             "equity": row["cached_equity"], "available": row["cached_available"],
             "cached_equity": row["cached_equity"], "cached_available": row["cached_available"],
+              "updated_at": row["updated_at"],
             "realized_pnl": row["realized_pnl"] or 0.0,
             "status_msg": row["status_msg"]}
 
@@ -419,10 +420,42 @@ async def m5_shutdown() -> None:
     price_stream.stop_price_stream()
 
 
+_balance_refreshed_at: dict[int, float] = {}
+
+
+def _refresh_balances(conn, rows, min_interval: float = 10.0) -> None:
+    """打开账户总览时向币安拉一次真实余额（方案 B），10 秒内不重复拉。
+
+    必须是同步函数，由 FastAPI 丢进线程池执行（铁律 3：禁止在事件循环里调同步 requests）。
+    """
+    now = time.time()
+    changed = False
+    for row in rows:
+        aid = int(row["id"])
+        if not row["is_enabled"] or now - _balance_refreshed_at.get(aid, 0) < min_interval:
+            continue
+        client = ccxt_clients.get(aid)
+        if not client:
+            continue
+        try:
+            equity, available = executor._account_equity(client)
+            conn.execute("UPDATE api_accounts SET cached_equity=?, cached_available=?, updated_at=? WHERE id=?",
+                         (equity, available, int(now), aid))
+            _balance_refreshed_at[aid] = now
+            changed = True
+        except Exception as exc:
+            db.insert_log("WARN", "api", f"刷新账户余额失败 {aid}: {exc}")
+    if changed:
+        conn.commit()
+
+
 @app.get("/api/accounts")
-async def accounts(token: str | None = None):
+def accounts(token: str | None = None):
     _auth(token); conn=db.get_conn()
-    return [_account_json(r) for r in conn.execute("SELECT * FROM api_accounts ORDER BY id").fetchall()]
+    rows=conn.execute("SELECT * FROM api_accounts ORDER BY id").fetchall()
+    _refresh_balances(conn, rows)            # 方案 B：进页面就拉一次真实余额
+    rows=conn.execute("SELECT * FROM api_accounts ORDER BY id").fetchall()
+    return [_account_json(r) for r in rows]
 
 
 @app.get("/api/accounts/{account_id}/positions")
