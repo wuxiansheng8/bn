@@ -250,7 +250,7 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
                         leverage=_apply_leverage(client,symbol,leverage)
                     estimated=qty*price/max(leverage,1)
                     if not check_margin_gate(aid,estimated,conn):
-                        why="保证金总闸门拒绝：超过账户净值 90%"; db.insert_log("WARN","executor",f"账户 {aid} {why}"); notifier.notify("trade_fail",why); _insert_copy(account,signal,"OPEN",qty,price,"FAILED",why); continue
+                        why="保证金总闸门拒绝：超过账户净值 90%"; db.insert_log("WARN","executor",f"账户 {aid} {why}"); notifier.notify("trade_fail",why); _insert_copy(account,signal,"OPEN",qty,0,"FAILED",why); continue
                     if not live:
                         db.insert_log("INFO","executor",f"[模拟] 开仓账户 {aid} {symbol} qty={qty}"); _insert_copy(account,signal,"OPEN",qty,price,"SKIPPED","SIMULATED"); continue
                     side="buy" if signal["position_side"]=="LONG" else "sell"
@@ -261,7 +261,7 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
                     # 铁律 4：只用采集侧写入事件的平仓前持仓，禁止回读推算持仓倒推。
                     trader_close=float(signal["executed_qty"]); pre=signal.get("pre_close_qty")
                     if pre is None or float(pre)<=0:
-                        why="信号缺少平仓前持仓量，拒绝按比例平仓"; db.insert_log("ERROR","executor",f"{signal['portfolio_id']} {signal['symbol']} {why}"); notifier.notify("parse_error",why); _insert_copy(account,signal,"CLOSE",0,price,"FAILED",why); continue
+                        why="信号缺少平仓前持仓量，拒绝按比例平仓"; db.insert_log("ERROR","executor",f"{signal['portfolio_id']} {signal['symbol']} {why}"); notifier.notify("parse_error",why); _insert_copy(account,signal,"CLOSE",0,0,"FAILED",why); continue
                     ratio=min(1.0, trader_close/float(pre))
                     match=_find_position(client,symbol,signal["position_side"])
                     actual=abs(float(match.get("contracts") or match.get("info",{}).get("positionAmt") or 0)) if match else 0
@@ -277,7 +277,7 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
                     conn.execute("UPDATE manual_overrides SET is_overridden=0 WHERE api_account_id=? AND symbol=? AND position_side=?",(aid,signal["symbol"],signal["position_side"])); conn.commit()
             except Exception as exc:
                 logger.exception("CCXT 执行失败"); db.insert_log("ERROR","executor",f"账户 {aid} 下单失败: {exc}"); notifier.notify("trade_fail",f"账户 {aid} 下单失败: {exc}")
-                try: _insert_copy(account,signal,"OPEN" if signal["is_open"] else "CLOSE",0,float(signal.get("avg_price") or 0),"FAILED",str(exc))
+                try: _insert_copy(account,signal,"OPEN" if signal["is_open"] else "CLOSE",0,0,"FAILED",str(exc))
                 except Exception as dbexc: db.insert_log("ERROR","executor",f"FAILED 记录写入失败: {dbexc}")
     except Exception as exc:
         logger.exception("信号解析失败"); db.insert_log("ERROR","executor",f"信号解析异常: {exc}"); notifier.notify("parse_error",str(exc))
