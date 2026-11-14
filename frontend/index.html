@@ -160,7 +160,7 @@
             <div v-else class="overflow-x-auto"><table><thead><tr><th class="text-left">备注</th><th class="text-left">API Key</th><th class="text-left">跟随交易员</th><th>比例</th><th>杠杆</th><th>状态</th><th>操作</th></tr></thead><tbody>
               <tr v-for="acc in settingsAccounts" :key="acc.id">
                 <td class="text-left font-medium">{{acc.remark}}</td><td class="text-left font-mono text-xs">{{acc.api_key||'****'}}</td><td class="text-left text-xs">{{traderName(acc.followed_trader_id)}}</td><td>{{acc.copy_ratio}}</td><td>{{acc.default_leverage}}x</td><td><span class="badge" :class="acc.is_enabled?'bg-ok/10 text-ok':'bg-ink-100 text-ink-400'">{{acc.is_enabled?'启用':'禁用'}}</span></td>
-                <td><div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkApi(acc.id)">检测</button><button class="btn btn-ghost btn-sm" @click="openEditAccount(acc)">编辑</button><button class="btn btn-ghost btn-sm text-err" @click="deleteAccount(acc.id)">删除</button></div></td>
+                <td><div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkApi(acc)" :disabled="checkingId===acc.id">{{checkingId===acc.id?'检测中…':'检测'}}</button><button class="btn btn-ghost btn-sm" @click="openEditAccount(acc)">编辑</button><button class="btn btn-ghost btn-sm text-err" @click="deleteAccount(acc.id)">删除</button></div></td>
               </tr>
             </tbody></table></div>
           </div>
@@ -181,11 +181,11 @@
             <div class="flex justify-between items-center"><h3 class="font-semibold text-sm">③ 代理节点池</h3><button class="btn btn-primary btn-sm" @click="checkAllProxies()" :disabled="checkAllRunning">{{checkAllRunning?'检测中…':'一键检测全部'}}</button></div>
             <textarea v-model="proxyBulkInput" class="input font-mono text-xs" rows="3" placeholder="批量导入（每行一个）：socks5://user:pass@ip:port 或 http://... 或 ip:port:user:pass"></textarea>
             <button class="btn btn-ghost btn-sm" @click="addProxies()" :disabled="!proxyBulkInput.trim()">批量添加</button>
-            <div v-if="proxies.length" class="overflow-x-auto"><table><thead><tr><th class="text-left">代理</th><th>出口IP</th><th>延迟</th><th>状态</th><th>失败</th><th>操作</th></tr></thead><tbody>
-              <tr v-for="p in proxies" :key="p.id"><td class="text-left font-mono text-xs">{{p.proxy_url}}</td><td>{{p.exit_ip||'--'}}</td><td>{{p.last_latency_ms? p.last_latency_ms+'ms':'--'}}</td><td><span class="badge" :class="p.status==='OK'?'bg-ok/10 text-ok':p.status==='FAIL'?'bg-err/10 text-err':'bg-ink-100 text-ink-400'">{{p.status}}</span></td><td>{{p.fail_count||0}}</td><td><div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkProxy(p.id)">检测</button><button class="btn btn-ghost btn-sm text-err" @click="deleteProxy(p.id)">删除</button></div></td></tr>
+            <div v-if="proxies.length" class="overflow-x-auto"><table><thead><tr><th class="text-left">代理</th><th>出口IP</th><th>延迟</th><th>状态</th><th>失败</th><th class="text-left">失败原因</th><th>操作</th></tr></thead><tbody>
+              <tr v-for="p in proxies" :key="p.id"><td class="text-left font-mono text-xs">{{p.proxy_url}}</td><td>{{p.exit_ip||'--'}}</td><td>{{p.last_latency_ms? p.last_latency_ms+'ms':'--'}}</td><td><span class="badge" :class="p.status==='OK'?'bg-ok/10 text-ok':p.status==='FAIL'?'bg-err/10 text-err':'bg-ink-100 text-ink-400'">{{p.status}}</span></td><td>{{p.fail_count||0}}</td><td class="text-left text-xs text-err" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="p.error_msg||''">{{p.error_msg||'--'}}</td><td><div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkProxy(p.id)">检测</button><button class="btn btn-ghost btn-sm text-err" @click="deleteProxy(p.id)">删除</button></div></td></tr>
             </tbody></table></div>
             <div v-else class="text-ink-400 text-sm p-2 text-center">暂无代理</div>
-            <div class="text-xs text-ink-400">理论有效频率：{{theoryFreq}} 次/秒（建议代理数 ≥ {{Math.ceil((pollTg.poll_interval_sec||2.5)*2.05)}}）</div>
+            <div class="text-xs text-ink-400">理论有效频率：{{theoryFreq}} 次/秒（建议代理数 ≥ {{Math.ceil((pollTg.poll_interval_sec||2.5)*2.05)}}，当前可用 {{okProxyCount}}/{{proxies.length}}）</div>
           </div>
 
           <!-- 模块4：轮询节拍与 TG -->
@@ -254,8 +254,24 @@
       <div class="grid grid-cols-2 gap-2"><div><label class="block text-xs text-ink-400 mb-1">跟单比例</label><input v-model.number="accountForm.copy_ratio" type="number" step="0.01" min="0.01" class="input" /></div><div><label class="block text-xs text-ink-400 mb-1">默认杠杆</label><input v-model.number="accountForm.default_leverage" type="number" min="1" max="125" class="input" /></div></div>
       <div class="flex items-center gap-2"><label class="text-sm">启用</label><input type="checkbox" v-model="accountForm.is_enabled" /></div>
       <div v-if="accountFormErr" class="text-err text-xs">{{accountFormErr}}</div>
-      <div v-if="checkApiResult" class="card p-2 text-xs space-y-1"><div>连通：{{checkApiResult.connected?'✓':'✗'}}</div><div>合约余额：{{fNum(checkApiResult.equity)}} U</div><div :class="checkApiResult.withdraw_enabled?'text-err font-bold':'text-ok'">提现权限：{{checkApiResult.withdraw_enabled?'已开启（请关闭！）':'已关闭 ✓'}}</div></div>
       <div class="flex gap-2 justify-end"><button class="btn btn-ghost" @click="showAccountModal=false">取消</button><button class="btn btn-primary" @click="saveAccount()" :disabled="actionLoading">{{actionLoading?'保存中…':'保存'}}</button></div>
+    </div>
+  </div>
+
+  <!-- API 检测结果弹窗 -->
+  <div v-if="showCheckResult" class="modal-overlay" @click.self="showCheckResult=false">
+    <div class="card max-w-sm w-full p-6 space-y-3">
+      <h3 class="font-semibold">API 检测结果 — {{checkResult.remark||''}}</h3>
+      <div class="text-sm space-y-1.5">
+        <div class="flex justify-between"><span class="text-ink-400">连通 / 签名</span><span :class="checkResult.connected?'text-ok':'text-err'">{{checkResult.connected?'✓ 正常':'✗ 失败'}}</span></div>
+        <div class="flex justify-between"><span class="text-ink-400">合约余额</span><span>{{fNum(checkResult.equity)}} U <span class="text-ink-400">（可用 {{fNum(checkResult.available)}}）</span></span></div>
+        <div class="flex justify-between"><span class="text-ink-400">提现权限</span><span :class="checkResult.withdraw_enabled?'text-err font-bold':'text-ok'">{{checkResult.withdraw_enabled?'✗ 已开启，请去币安关闭':(checkResult.withdraw_enabled===null||checkResult.withdraw_enabled===undefined?'? 未知':'✓ 已关闭')}}</span></div>
+        <div class="flex justify-between"><span class="text-ink-400">持仓模式</span><span :class="checkResult.dual_side_position?'text-ok':'text-err'">{{checkResult.dual_side_position?'✓ 双向 (Hedge)':(checkResult.dual_side_position===false?'✗ 单向，请切换为双向':'? 未知')}}</span></div>
+      </div>
+      <div v-if="checkResult.errors && checkResult.errors.length" class="card p-2 text-xs text-warn space-y-1">
+        <div v-for="(e,i) in checkResult.errors" :key="i">· {{e}}</div>
+      </div>
+      <div class="flex justify-end"><button class="btn btn-primary" @click="showCheckResult=false">关闭</button></div>
     </div>
   </div>
 
@@ -297,7 +313,8 @@ createApp({
     const settingsTraders = ref([]);
     const showAccountModal = ref(false); const editingAccount = ref(null);
     const accountForm = reactive({ remark:'', api_key:'', api_secret:'', copy_ratio:1.0, default_leverage:10, is_enabled:true, followed_trader_id:'' });
-    const accountFormErr = ref(''); const checkApiResult = ref(null);
+    const accountFormErr = ref(''); const checkingId = ref(0);
+    const showCheckResult = ref(false); const checkResult = ref({});
     const addTraderInput = ref(''); const addTraderMsg = ref(''); const addTraderOk = ref(false); const addTraderBusy = ref(false);
     const proxies = ref([]); const proxyBulkInput = ref(''); const checkAllRunning = ref(false);
     const pollTg = reactive({ poll_interval_sec:2.5, tg_bot_token:'', tg_chat_id:'', tg_enabled:false });
@@ -319,8 +336,9 @@ createApp({
     const sumPosVal = computed(() => accounts.value.reduce((s,a)=>s+(a._posVal||0),0));
     const sumUPnl = computed(() => accounts.value.reduce((s,a)=>s+(a._uPnl||0),0));
     const sumRealized = computed(() => accounts.value.reduce((s,a)=>s+(+a.realized_pnl||0),0));
-    const theoryFreq = computed(() => { const n = proxies.value.length; if (!n) return '0.00'; const beat = pollTg.poll_interval_sec||2.5; return Math.min(n/2.05, 1/beat).toFixed(2); });
-    const pollFreqWarn = computed(() => { const n = proxies.value.length; if (!n) return '还没有代理节点，系统无法采集'; const beat = pollTg.poll_interval_sec||2.5; return (1/beat) > (n/2.05) ? '节拍比代理额度快，建议增加代理' : ''; });
+    const okProxyCount = computed(() => proxies.value.filter(p => p.status === 'OK').length);
+    const theoryFreq = computed(() => { const n = okProxyCount.value; if (!n) return '0.00'; const beat = pollTg.poll_interval_sec||2.5; return Math.min(n/2.05, 1/beat).toFixed(2); });
+    const pollFreqWarn = computed(() => { const n = okProxyCount.value; if (!n) return '还没有可用代理（状态 OK），系统无法采集'; const beat = pollTg.poll_interval_sec||2.5; return (1/beat) > (n/2.05) ? '节拍比代理额度快，建议增加代理' : ''; });
 
     function fNum(n, dec=2) { return n==null?'--':Number(n).toFixed(dec); }
     function fPct(n) { return n==null?'--':(Number(n)*100).toFixed(2)+'%'; }
@@ -414,8 +432,8 @@ createApp({
 
     // ── 设置页：API 账户 ──
     async function loadSettingsAccounts() { settingsAccountsLoading.value=true; try { settingsAccounts.value=await apiFetch('/api/settings/api-accounts'); } catch(e) {} finally { settingsAccountsLoading.value=false; } }
-    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:''}); checkApiResult.value=null; accountFormErr.value=''; showAccountModal.value=true; }
-    function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||''}); checkApiResult.value=null; accountFormErr.value=''; showAccountModal.value=true; }
+    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:''}); accountFormErr.value=''; showAccountModal.value=true; }
+    function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||''}); accountFormErr.value=''; showAccountModal.value=true; }
     async function saveAccount() {
       accountFormErr.value=''; if (!accountForm.remark.trim()) { accountFormErr.value='备注名必填'; return; }
       if (!editingAccount.value && (!accountForm.api_key.trim()||!accountForm.api_secret.trim())) { accountFormErr.value='新增时 API Key 和 Secret 必填'; return; }
@@ -426,7 +444,17 @@ createApp({
       } catch(e) { accountFormErr.value='保存失败：'+e.message; } finally { actionLoading.value=false; }
     }
     async function deleteAccount(id) { if (!confirm('确认删除此 API 账户？')) return; try { await apiFetch(`/api/settings/api-accounts/${id}`, {method:'DELETE'}); await loadSettingsAccounts(); } catch(e) { alert('删除失败：'+e.message); } }
-    async function checkApi(id) { actionLoading.value=true; try { checkApiResult.value=await apiFetch(`/api/settings/api-accounts/${id}/check`, {method:'POST'}); if (!showAccountModal.value) { showAccountModal.value=false; } } catch(e) { alert('检测失败：'+e.message); } finally { actionLoading.value=false; } }
+    async function checkApi(acc) {
+      if (checkingId.value) return;
+      checkingId.value = acc.id;
+      try {
+        const r = await apiFetch(`/api/settings/api-accounts/${acc.id}/check`, {method:'POST'});
+        checkResult.value = {...r, remark: acc.remark};
+        showCheckResult.value = true;
+        await loadSettingsAccounts();
+      } catch(e) { alert('检测失败：'+e.message); }
+      finally { checkingId.value = 0; }
+    }
 
     // ── 设置页：交易员 ──
     async function loadSettingsTraders() { try { settingsTraders.value=await apiFetch('/api/settings/traders'); } catch(e) {} }
@@ -456,7 +484,19 @@ createApp({
 
     // ── 设置页：代理 ──
     async function loadProxies() { try { proxies.value=await apiFetch('/api/settings/proxies'); } catch(e) {} }
-    async function addProxies() { if (!proxyBulkInput.value.trim()) return; try { await apiFetch('/api/settings/proxies', {method:'POST', body:JSON.stringify({proxies:proxyBulkInput.value})}); proxyBulkInput.value=''; await loadProxies(); } catch(e) { alert('添加失败：'+e.message); } }
+    async function addProxies() {
+      if (!proxyBulkInput.value.trim()) return;
+      try {
+        const r=await apiFetch('/api/settings/proxies', {method:'POST', body:JSON.stringify({proxies:proxyBulkInput.value})});
+        if (r.rejected && r.rejected.length) {
+          alert(`已添加 ${r.added} 个；以下 ${r.rejected.length} 行格式不对，未添加（可修正后重新提交）：\n\n`
+            + r.rejected.map(x=>`第 ${x.line} 行：${x.error}\n   ${x.proxy}`).join('\n'));
+        } else {
+          proxyBulkInput.value='';
+        }
+        await loadProxies();
+      } catch(e) { alert('添加失败：'+e.message); }
+    }
     async function checkProxy(id) { try { await apiFetch(`/api/settings/proxies/${id}/check`, {method:'POST'}); await loadProxies(); } catch(e) { alert('检测失败：'+e.message); } }
     async function checkAllProxies() { checkAllRunning.value=true; try { await apiFetch('/api/settings/proxies/check-all', {method:'POST'}); setTimeout(()=>{ loadProxies(); checkAllRunning.value=false; }, 3000); } catch(e) { alert('检测失败：'+e.message); checkAllRunning.value=false; } }
     async function deleteProxy(id) { if (!confirm('确认删除此代理？')) return; try { await apiFetch(`/api/settings/proxies/${id}`, {method:'DELETE'}); await loadProxies(); } catch(e) { alert('删除失败：'+e.message); } }
@@ -507,10 +547,10 @@ createApp({
       logs, logsTotal, logsLoading, logsErr, logFilter, logRetDays, loadLogs, debounceLogs, saveLogRetention,
       showTraderModal, modalTitle, modalMode, modalItems, modalLoading, openTraderModal,
       showEmergencyConfirm, confirmEmergencyClose, doEmergencyClose, emergencyResult, actionLoading,
-      settingsAccounts, settingsAccountsLoading, showAccountModal, editingAccount, accountForm, accountFormErr, checkApiResult,
-      openAddAccount, openEditAccount, saveAccount, deleteAccount, checkApi,
+      settingsAccounts, settingsAccountsLoading, showAccountModal, editingAccount, accountForm, accountFormErr,
+      openAddAccount, openEditAccount, saveAccount, deleteAccount, checkApi, checkingId, showCheckResult, checkResult,
       settingsTraders, addTraderInput, addTraderMsg, addTraderOk, addTrader, addTraderBusy, deleteTrader, resetTrader,
-      proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, theoryFreq, pollFreqWarn,
+      proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, theoryFreq, pollFreqWarn, okProxyCount,
       pollTg, savePollTg, testTg, tgTestMsg, tgTestOk,
       showTpSlModal, tpSlTarget, tpSlForm, openTpSl, setTpSl,
       manualCloseHalf, manualCloseAll, manualResume,

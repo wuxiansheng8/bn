@@ -294,11 +294,11 @@ from urllib.parse import urlparse, parse_qs
 import requests
 try:
     from . import bapi, executor, notifier, price_stream
-    from .proxy_pool import ProxyPool
+    from .proxy_pool import ProxyPool, _normalize_proxy
     from .collector import acquire_page_proxy, bootstrap_trader, init_collector, rows_of, start_collector, stop_collector
 except ImportError:
     import bapi, executor, notifier, price_stream  # type: ignore
-    from proxy_pool import ProxyPool  # type: ignore
+    from proxy_pool import ProxyPool, _normalize_proxy  # type: ignore
     from collector import acquire_page_proxy, bootstrap_trader, init_collector, rows_of, start_collector, stop_collector  # type: ignore
 from cryptography.fernet import Fernet
 
@@ -560,13 +560,33 @@ async def delete_api_account(account_id: int, token: str | None=None):
 
 @app.post("/api/settings/api-accounts/{account_id}/check")
 def check_api_account(account_id: int, token: str | None=None):
+    """检测 API：连通/额度/提现权限/持仓模式。成功后把余额写回缓存，总览页立刻有数。"""
     _auth(token); client=ccxt_clients.get(account_id)
     if not client: raise HTTPException(404,"账户客户端不存在")
-    result={"ok":True,"connected":False,"equity":None,"withdraw_enabled":None,"futures_enabled":None,"dual_side_position":None,"errors":[]}
+    result={"ok":True,"connected":False,"equity":None,"available":None,"withdraw_enabled":None,
+            "futures_enabled":None,"dual_side_position":None,"errors":[]}
     try:
-        balance=client.fetch_balance({"type":"future"}); result["connected"]=True; result["equity"]=balance.get("total",{}).get("USDT")
+        balance=client.fetch_balance({"type":"future"}); result["connected"]=True
+        info=balance.get("info",{}) or {}
+        result["equity"]=balance.get("total",{}).get("USDT") or info.get("totalMarginBalance")
+        result["available"]=balance.get("free",{}).get("USDT") or info.get("availableBalance")
     except Exception as exc:
         db.insert_log("ERROR","api",f"API 检测失败(余额) {account_id}: {exc}"); raise HTTPException(502,f"连通/签名失败：{exc}")
+    # 检测通过就把余额写回缓存：不然总览页要等第一笔下单才有数字（文档 5.2）
+    if result["connected"]:
+        def _num(value):
+            try: return float(value)
+            except (TypeError, ValueError): return None
+        equity,available=_num(result["equity"]),_num(result["available"])
+        if equity is not None or available is not None:
+            try:
+                conn=db.get_conn()
+                conn.execute("UPDATE api_accounts SET cached_equity=COALESCE(?,cached_equity), "
+                             "cached_available=COALESCE(?,cached_available), updated_at=? WHERE id=?",
+                             (equity,available,int(time.time()),account_id))
+                conn.commit()
+            except Exception as exc:
+                db.insert_log("WARN","api",f"检测结果写入余额缓存失败 {account_id}: {exc}")
     # 方法名以 ccxt 实际暴露为准；缺失时给出明确提示而不是静默失败
     fn=getattr(client,"sapi_get_account_apirestrictions",None)
     if fn is None: result["errors"].append("当前 ccxt 版本没有 apiRestrictions 方法，无法检测提现权限")
@@ -672,14 +692,27 @@ async def settings_proxies(token: str | None=None):
 
 @app.post("/api/settings/proxies")
 async def add_proxies(payload: dict[str,Any], token: str | None=None):
+    """批量添加代理：逐行校验，格式不对的直接回原因（文档 5.5 模块 3）。
+
+    全角冒号、漏写 // 等由 _normalize_proxy 兜住；入库统一存规范化后的地址，
+    这样同一个代理的几种写法不会重复占位。
+    """
     _auth(token); items=payload.get("proxies") or [payload]
     if isinstance(items,str): items=[{"proxy_url":v.strip()} for v in items.splitlines() if v.strip()]
-    conn=db.get_conn(); added=0
-    for item in items:
-        url=str(item.get("proxy_url") or item.get("url") or "").strip()
-        if not url: continue
-        conn.execute("INSERT OR IGNORE INTO proxy_nodes(proxy_url,display_name,status,updated_at) VALUES(?,?,'UNTESTED',?)",(url,item.get("display_name") or url,int(time.time()))); added+=1
-    conn.commit(); pool.reload_from_db(); return {"ok":True,"added":added}
+    conn=db.get_conn(); added=0; rejected=[]
+    for line_no, item in enumerate(items, start=1):
+        raw=str(item.get("proxy_url") or item.get("url") or "").strip()
+        if not raw: continue
+        try:
+            normalized,_=_normalize_proxy(raw)
+        except (ValueError, TypeError) as exc:
+            rejected.append({"line":line_no,"proxy":raw,"error":str(exc)}); continue
+        cur=conn.execute("INSERT OR IGNORE INTO proxy_nodes(proxy_url,display_name,status,updated_at) "
+                         "VALUES(?,?,'UNTESTED',?)",
+                         (normalized, item.get("display_name") or normalized, int(time.time())))
+        added+=cur.rowcount
+    conn.commit(); pool.reload_from_db()
+    return {"ok":True,"added":added,"rejected":rejected}
 
 
 @app.delete("/api/settings/proxies/{proxy_id}")
@@ -695,10 +728,6 @@ def _test_proxy_id():
 def _probe_proxy(url):
     pid=_test_proxy_id()
     if not pid: return {"ok":False,"error":"请先添加一个交易员，代理检测需要 portfolioId"}
-    try:
-        from .proxy_pool import _normalize_proxy
-    except ImportError:
-        from proxy_pool import _normalize_proxy
     started=time.perf_counter()
     try:
         _,proxies=_normalize_proxy(url); response=bapi.fetch_order_history(pid,proxies,page_size=1)
@@ -706,11 +735,21 @@ def _probe_proxy(url):
     except Exception as exc: notifier.notify("proxy_error",f"代理检测失败 {url}: {exc}"); return {"ok":False,"error":str(exc)}
 
 
+def _save_proxy_result(proxy_id: int, result: dict) -> None:
+    """把检测结果（含失败原因）写回 proxy_nodes，前端表格直接显示。"""
+    ok = bool(result.get("ok"))
+    db.get_conn().execute(
+        "UPDATE proxy_nodes SET status=?, last_latency_ms=?, error_msg=?, updated_at=? WHERE id=?",
+        ("OK" if ok else "FAIL", result.get("latency_ms"),
+         "" if ok else str(result.get("error") or "")[:300], int(time.time()), proxy_id))
+    db.get_conn().commit()
+
+
 @app.post("/api/settings/proxies/{proxy_id}/check")
 async def test_proxy(proxy_id: int, token: str | None=None):
     _auth(token); row=db.get_conn().execute("SELECT proxy_url FROM proxy_nodes WHERE id=?",(proxy_id,)).fetchone()
     if not row: raise HTTPException(404,"代理不存在")
-    result=_probe_proxy(row["proxy_url"]); db.get_conn().execute("UPDATE proxy_nodes SET status=?,last_latency_ms=?,updated_at=? WHERE id=?",("OK" if result["ok"] else "FAIL",result.get("latency_ms"),int(time.time()),proxy_id)); db.get_conn().commit(); return result
+    result=_probe_proxy(row["proxy_url"]); _save_proxy_result(proxy_id,result); return result
 
 
 @app.post("/api/settings/proxies/check-all")
@@ -718,7 +757,7 @@ async def test_all_proxies(token: str | None=None):
     _auth(token)
     def task():
         for row in db.get_conn().execute("SELECT id,proxy_url FROM proxy_nodes").fetchall():
-            result=_probe_proxy(row["proxy_url"]); c=db.get_conn(); c.execute("UPDATE proxy_nodes SET status=?,last_latency_ms=?,updated_at=? WHERE id=?",("OK" if result["ok"] else "FAIL",result.get("latency_ms"),int(time.time()),row["id"])); c.commit()
+            _save_proxy_result(row["id"], _probe_proxy(row["proxy_url"]))
     threading.Thread(target=task,daemon=True,name="proxy-check-all").start(); return {"ok":True,"started":True}
 
 

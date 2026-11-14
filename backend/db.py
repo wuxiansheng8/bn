@@ -95,9 +95,14 @@ def init_db() -> None:
             last_latency_ms INTEGER,
             status          TEXT DEFAULT 'UNTESTED',
             fail_count      INTEGER DEFAULT 0,
+            error_msg       TEXT DEFAULT '',
             updated_at      INTEGER DEFAULT 0
         )
     """)
+    # 兼容旧库：补 error_msg 列（存最近一次检测/采集的失败原因，前端表格要显示）
+    proxy_cols = {row[1] for row in cur.execute("PRAGMA table_info(proxy_nodes)")}
+    if "error_msg" not in proxy_cols:
+        cur.execute("ALTER TABLE proxy_nodes ADD COLUMN error_msg TEXT DEFAULT ''")
 
     # 5. 手动接管表
     cur.execute("""

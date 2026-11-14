@@ -31,28 +31,53 @@ DEFAULT_TEST_PORTFOLIO_ID = ""
 logger = logging.getLogger(__name__)
 
 
+# 手机/中文输入法常把半角符号打成全角，粘进来就成了非法地址；这里先统一成半角（2026-11-14 实测踩坑）。
+_FULLWIDTH_MAP = str.maketrans({"：": ":", "＠": "@", "／": "/", "．": ".", "％": "%"})
+_SCHEMES = ("socks5", "socks5h", "http", "https")
+
+
 def _normalize_proxy(raw_url: str) -> tuple[str, dict[str, str]]:
-    """规范化 URL 或 ip:port:user:pass 格式，并生成 requests proxies 字典。"""
-    value = (raw_url or "").strip()
+    """规范化代理地址，并生成 requests 用的 proxies 字典。
+
+    兼容三种输入：
+      1. scheme://[user:pass@]host:port     （标准 URL）
+      2. scheme:user:pass@host:port         （漏了 //，代理商文档常见写法）
+      3. host:port:user:pass                （无账号时可写 host:port）
+    全角冒号/＠/／会先转成半角。解析失败抛出 ValueError，由调用方转成可读提示。
+    """
+    value = (raw_url or "").strip().translate(_FULLWIDTH_MAP)
     if not value:
         raise ValueError("代理地址为空")
     if "://" not in value:
-        parts = value.split(":")
-        if len(parts) != 4:
-            raise ValueError("代理格式应为 scheme://... 或 ip:port:user:pass")
-        host, port, username, password = parts
-        value = f"http://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+        head, sep, rest = value.partition(":")
+        if sep and head.lower() in _SCHEMES and "@" in rest:
+            value = f"{head}://{rest}"
+        else:
+            parts = value.split(":")
+            if len(parts) not in (2, 4):
+                raise ValueError("代理格式应为 scheme://[user:pass@]host:port、scheme:user:pass@host:port 或 host:port:user:pass")
+            if len(parts) == 2:
+                host, port = parts
+                value = f"http://{host}:{port}"
+            else:
+                host, port, username, password = parts
+                value = f"http://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
     parsed = urlsplit(value)
-    if parsed.scheme.lower() not in ("socks5", "socks5h", "http", "https"):
-        raise ValueError(f"不支持的代理协议: {parsed.scheme}")
-    if not parsed.hostname or not parsed.port:
-        raise ValueError("代理地址缺少有效主机或端口")
-    # URL 标准化并保留认证信息；对 SOCKS 用户优先采用远端 DNS 解析形式。
+    if parsed.scheme.lower() not in _SCHEMES:
+        raise ValueError(f"不支持的代理协议: {parsed.scheme or '(空)'}，只支持 socks5 / socks5h / http / https")
+    try:
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        raise ValueError("代理端口不是有效数字")
+    if not host:
+        raise ValueError("代理地址缺少有效主机")
+    if not port or not (0 < port < 65536):
+        raise ValueError("代理地址缺少有效端口（1-65535）")
+    # URL 标准化并保留认证信息；SOCKS 一律用 socks5h（远端 DNS 解析）。
     scheme = parsed.scheme.lower()
-    netloc = parsed.netloc
     if scheme in ("socks5", "socks5h"):
         scheme = "socks5h"
-    normalized = urlunsplit((scheme, netloc, "", "", ""))
+    normalized = urlunsplit((scheme, parsed.netloc, "", "", ""))
     return normalized, {"http": normalized, "https": normalized}
 
 
