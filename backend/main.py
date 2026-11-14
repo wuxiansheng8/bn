@@ -617,10 +617,6 @@ def add_trader(payload: dict[str,Any], token: str | None=None):
                  "ON CONFLICT(portfolio_id) DO UPDATE SET source_url=excluded.source_url, status='NORMAL', error_msg=''",
                  (pid, payload.get("nickname") or pid, raw))
     conn.commit()
-    # 监控全部走代理池：没有代理节点时不去建底账（否则会空转等待），明确让用户先配代理。
-    if not pool.get_stats():
-        return {"ok":True,"portfolio_id":pid,"initialized":False,
-                "message":"已加入；当前还没有代理节点，底账未建立。请先在③代理节点池添加并检测代理，再点【重置状态】重建底账"}
     info=bootstrap_trader(pid)
     if info is None:
         db.insert_log("WARN","api",f"交易员 {pid} 已加入，但底账初始化失败")

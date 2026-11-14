@@ -13,11 +13,14 @@ from typing import Any
 
 try:
     from . import bapi, db, notifier, reconstructor
+    from .proxy_pool import COOLDOWN_IP_BUSY_SEC
 except ImportError:
     import bapi  # type: ignore
     import db  # type: ignore
     import notifier  # type: ignore
     import reconstructor  # type: ignore
+    from proxy_pool import COOLDOWN_IP_BUSY_SEC  # type: ignore
+
 
 logger = logging.getLogger(__name__)
 MAX_BACKFILL, HOT_PAGE_SIZE, BACKFILL_PAGE_SIZE, FILL_PAGE_SIZE = 150, 10, 50, 20
@@ -30,6 +33,10 @@ BOOTSTRAP_PAGE_WAIT_SEC = 3.5   # 底账第 2/3 页：最多等满一个 2.05s �
 FILL_PAGE_WAIT_SEC = 2.2        # 热通道补页：必须熬过一个 2.05s 冷却，否则漏单（见下方注释）
 WORKER_RETRY_WAIT_SEC = 1.0     # 限流后换 IP 重试
 PAGE_WAIT_POLL_SEC = 0.05
+
+# 一个代理都没配时的一次性直连（仅用于「底账初始化」这种只读动作，绝不用于热通道轮询）：
+# 底账读的是币安公开数据，海外机器直连即可；国内机器会自然失败并留下日志。
+DIRECT_PROXY = {"url": "", "proxies": None}
 _last_margin_refresh: dict[str, float] = {}
 _rr_offset = 0                  # P1-7：每拍轮转起点，代理少于交易员时不让前面的交易员独占
 _pool = _broadcast_fn = _config_getter = None
@@ -453,13 +460,20 @@ def _bootstrap_one(row: dict) -> None:
     """开机底账：detail + position-history + order-history 第 1 页共用同一个代理。
 
     这三个是不同接口，实测互不占 2.05 秒锁，所以第一次取到的 IP 可以连发三枪；
-    第 2、3 页再用 acquire_page_proxy() 换 IP 或等满冷却。
+    第 2、3 页再用 acquire_page_proxy() 换 IP 或等满冷却（池子为空时走直连，翻页自己等 2.05 秒）。
 
     铁律 9：本函数不得向上抛异常——单个交易员初始化失败不能拖死整个采集引擎。
     """
     pid = row["portfolio_id"]
     proxy = acquire_page_proxy(BOOTSTRAP_FIRST_WAIT_SEC)
-    if not proxy:
+    # 池子里一个节点都没有时允许直连跑这一次底账（东京机器直连币安可读）；
+    # 池子里有节点但都不可用时不降级——那说明代理本身出问题了，应该让人看到。
+    direct = proxy is None and not _pool_size()
+    if direct:
+        proxy = DIRECT_PROXY
+        db.insert_log("WARN", "collector",
+                      f"初始化 {pid} 时池中没有任何代理节点，本次底账改用服务器直连（仅此一次，热通道仍需代理）")
+    elif not proxy:
         db.insert_log("WARN", "collector", f"初始化 {pid} 无可用代理，本轮跳过（调度器仍会启动）")
         return
 
@@ -524,7 +538,13 @@ def _bootstrap_one(row: dict) -> None:
     for _attempt in range(6):
         if not page1_pending and (page1_short or not cursor or len(orders) >= MAX_BACKFILL):
             break
-        page_proxy = acquire_page_proxy(BOOTSTRAP_PAGE_WAIT_SEC)
+        if direct:
+            # 直连只有服务器自己的一个 IP，翻页必须自己守满 2.05 秒（第 1 页刚在 phase A 发过）
+            if _stop_event.wait(COOLDOWN_IP_BUSY_SEC):
+                break
+            page_proxy = DIRECT_PROXY
+        else:
+            page_proxy = acquire_page_proxy(BOOTSTRAP_PAGE_WAIT_SEC)
         if not page_proxy:
             db.insert_log("WARN", "collector", f"交易员 {pid} 底账翻页无可用代理，保留已拿到的 {len(orders)} 条")
             break
