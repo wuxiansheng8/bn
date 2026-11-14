@@ -198,7 +198,10 @@ def _cancel_conditional_orders(client, symbol: str, position_side: str) -> int:
         return 0
     cancelled = 0
     for order in orders:
-        if str(order.get("type", "")).upper() not in CONDITIONAL_ORDER_TYPES:
+        # 币安 openAlgoOrders 返回的字段名是 orderType（不是 type），漏读会导致一条都撤不掉，
+        # 改价时撞 -4130「同方向已有 closePosition 单」
+        order_type = str(order.get("orderType") or order.get("type") or "").upper()
+        if order_type not in CONDITIONAL_ORDER_TYPES:
             continue
         order_side = str(order.get("positionSide", "")).upper()
         if order_side and order_side != position_side.upper():
