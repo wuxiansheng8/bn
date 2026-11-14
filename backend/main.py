@@ -421,30 +421,41 @@ async def m5_shutdown() -> None:
 
 
 _balance_refreshed_at: dict[int, float] = {}
+_pnl_refreshed_at: dict[int, float] = {}
 
 
 def _refresh_balances(conn, rows, min_interval: float = 10.0) -> None:
-    """打开账户总览时向币安拉一次真实余额（方案 B），10 秒内不重复拉。
+    """打开账户总览时向币安拉一次真实余额与累计已实现盈亏（方案 B），10 秒内不重复拉。
 
     必须是同步函数，由 FastAPI 丢进线程池执行（铁律 3：禁止在事件循环里调同步 requests）。
+    已实现盈亏走 income 接口（权重 30），同样 10 秒节流。
     """
     now = time.time()
     changed = False
     for row in rows:
         aid = int(row["id"])
-        if not row["is_enabled"] or now - _balance_refreshed_at.get(aid, 0) < min_interval:
+        if not row["is_enabled"]:
             continue
         client = ccxt_clients.get(aid)
         if not client:
             continue
-        try:
-            equity, available = executor._account_equity(client)
-            conn.execute("UPDATE api_accounts SET cached_equity=?, cached_available=?, updated_at=? WHERE id=?",
-                         (equity, available, int(now), aid))
-            _balance_refreshed_at[aid] = now
-            changed = True
-        except Exception as exc:
-            db.insert_log("WARN", "api", f"刷新账户余额失败 {aid}: {exc}")
+        if now - _balance_refreshed_at.get(aid, 0) >= min_interval:
+            try:
+                equity, available = executor._account_equity(client)
+                conn.execute("UPDATE api_accounts SET cached_equity=?, cached_available=?, updated_at=? WHERE id=?",
+                             (equity, available, int(now), aid))
+                _balance_refreshed_at[aid] = now
+                changed = True
+            except Exception as exc:
+                db.insert_log("WARN", "api", f"刷新账户余额失败 {aid}: {exc}")
+        if now - _pnl_refreshed_at.get(aid, 0) >= min_interval:
+            try:
+                total = executor.realized_pnl_total(client)
+                conn.execute("UPDATE api_accounts SET realized_pnl=? WHERE id=?", (total, aid))
+                _pnl_refreshed_at[aid] = now
+                changed = True
+            except Exception as exc:
+                db.insert_log("WARN", "api", f"刷新已实现盈亏失败 {aid}: {exc}")
     if changed:
         conn.commit()
 

@@ -217,6 +217,22 @@ def _cancel_conditional_orders(client, symbol: str, position_side: str) -> int:
     return cancelled
 
 
+def realized_pnl_total(client) -> float:
+    """累计已实现盈亏：汇总币安 income 接口里的 REALIZED_PNL（含手动平仓）。
+
+    2026-11-15：realized_pnl 此前只读不写，页面上永远是 0。
+    这里走 GET /fapi/v1/income（权重 30），由调用方负责节流。
+    """
+    params = {"incomeType": "REALIZED_PNL", "asset": "USDT", "limit": 1000}
+    getter = getattr(client, "fapiPrivateGetIncome", None)
+    rows = getter(params) if callable(getter) else client.fetch2("income", "fapiPrivate", "GET", params)
+    total = 0.0
+    for row in rows or []:
+        try: total += float(row.get("income") or 0)
+        except (TypeError, ValueError, AttributeError): continue
+    return total
+
+
 def _refresh_equity_cache(account_id: int) -> None:
     """平仓后刷新账户余额缓存（方案 A），避免页面停在"仓位还在时"的旧数值。"""
     client = _clients.get(account_id)
