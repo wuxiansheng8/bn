@@ -172,25 +172,45 @@ def _apply_leverage(client, symbol: str, leverage: int) -> int:
         return max_leverage
 
 
+def _algo_request(client, method: str, path: str, params: dict):
+    """调用币安「算法单」私有接口。
+
+    2025-12-09 起币安把 STOP_MARKET / TAKE_PROFIT_MARKET 等条件单迁到 Algo 服务，
+    旧接口 `/fapi/v1/order` 对这些类型直接返回 -4120 STOP_ORDER_SWITCH_ALGO；
+    ccxt 4.4.27 还没有 algoOrder 封装，因此用 fetch2 发签名请求
+    （fetch2 的 path 不带 /fapi/v1 前缀，由 ccxt 自动拼上）。
+    """
+    return client.fetch2(path, "fapiPrivate", method, params)
+
+
+def _exchange_id(client, symbol: str) -> str:
+    """统一符号 → 币安交易对 id（ZEC/USDT:USDT → ZECUSDT），算法单接口要的是 id。"""
+    market = client.market(symbol) or {}
+    return str(market.get("id") or symbol)
+
+
 def _cancel_conditional_orders(client, symbol: str, position_side: str) -> int:
-    """撤掉该币种方向全部未触发的条件单（改价 / 仓位归零时用），返回撤销数量。"""
+    """撤掉该币种方向全部未触发的算法条件单（改价 / 仓位归零时用），返回撤销数量。"""
     try:
-        orders = client.fetch_open_orders(symbol) or []
+        orders = _algo_request(client, "GET", "openAlgoOrders", {"symbol": _exchange_id(client, symbol)}) or []
     except Exception as exc:
-        db.insert_log("WARN", "executor", f"查询条件单失败 {symbol}: {exc}")
+        db.insert_log("WARN", "executor", f"查询算法条件单失败 {symbol}: {exc}")
         return 0
     cancelled = 0
     for order in orders:
         if str(order.get("type", "")).upper() not in CONDITIONAL_ORDER_TYPES:
             continue
-        order_side = str((order.get("info") or {}).get("positionSide", "")).upper()
+        order_side = str(order.get("positionSide", "")).upper()
         if order_side and order_side != position_side.upper():
             continue
+        algo_id = order.get("algoId")
+        if algo_id in (None, ""):
+            continue
         try:
-            client.cancel_order(order["id"], symbol)
+            _algo_request(client, "DELETE", "algoOrder", {"algoId": algo_id})
             cancelled += 1
         except Exception as exc:
-            db.insert_log("ERROR", "executor", f"撤条件单失败 {symbol} {order.get('id')}: {exc}")
+            db.insert_log("ERROR", "executor", f"撤算法条件单失败 {symbol} algoId={algo_id}: {exc}")
     return cancelled
 
 
@@ -302,8 +322,10 @@ def close_position(account_id: int, symbol: str, position_side: str, fraction: f
 def set_tp_sl(account_id: int,symbol: str,position_side: str,tp_price=None,sl_price=None,portfolio_id="") -> dict:
     """挂价格止盈/止损：先撤旧单再挂新单，单号写回 manual_overrides（文档 5.4）。
 
-    下单口径：closePosition=true 时币安不接受 reduceOnly，且数量必须为空；
-    ccxt 在 closePosition 存在时本就会省略 quantity，这里显式传 None 表明意图。
+    下单口径（2025-12-09 起）：币安已把条件单迁到 Algo 服务，
+    必须走 `POST /fapi/v1/algoOrder`，否则返回 -4120；
+    字段名为 `triggerPrice`（不再是 stopPrice），`closePosition="true"` 表示触发后市价全平，
+    此时不得再传 quantity。
     """
     client=_clients.get(account_id)
     if not client: raise RuntimeError("账户 CCXT 客户端不可用")
@@ -312,14 +334,22 @@ def set_tp_sl(account_id: int,symbol: str,position_side: str,tp_price=None,sl_pr
         db.insert_log("INFO","executor",f"[模拟] 设置止盈止损 {symbol}（未下单，不打接管标记）"); return {"ok":True,"simulated":True}
     sym=_symbol(client,symbol); side=position_side.upper()
     if _find_position(client,sym,side) is None: raise ValueError("当前无实际持仓")
+    exchange_id=_exchange_id(client,sym)
     _cancel_conditional_orders(client,sym,side)          # 改价 = 先撤旧单
     result={}; order_ids={}
     for order_type,price,id_key in (("TAKE_PROFIT_MARKET",tp_price,"tp_order_id"),
                                     ("STOP_MARKET",sl_price,"sl_order_id")):
         if price is None: continue
-        order=client.create_order(sym,order_type,"sell" if side=="LONG" else "buy",None,None,
-                                  {"stopPrice":float(price),"positionSide":side,"closePosition":True})
-        result[order_type]=order; order_ids[id_key]=str(order.get("id") or "")
+        order=_algo_request(client,"POST","algoOrder",{
+            "algoType":"CONDITIONAL",                 # 文档：目前仅支持 CONDITIONAL
+            "symbol":exchange_id,                     # 算法单接口要币安 id（ZECUSDT）
+            "side":"SELL" if side=="LONG" else "BUY",
+            "positionSide":side,                      # 双向持仓必须传
+            "type":order_type,
+            "triggerPrice":float(price),              # 字段名是 triggerPrice，不是 stopPrice
+            "closePosition":"true",                   # 触发后市价全平；此时不得传 quantity
+        })
+        result[order_type]=order; order_ids[id_key]=str(order.get("algoId") or "")
     _override(db.get_conn(),account_id,portfolio_id,symbol,side,
               tp_price=tp_price,sl_price=sl_price,**order_ids)
     db.insert_log("TRADE","executor",f"[账户{account_id}] 设置止盈止损 {symbol} {side} tp={tp_price} sl={sl_price}")
@@ -334,11 +364,10 @@ def emergency_close_all(ccxt_clients: dict,ws_broadcast_fn,config_getter) -> dic
     closed=failed=0; remaining=[]
     for aid,client in ccxt_clients.items():
         try:
-            for order in client.fetch_open_orders():
-                if str(order.get("type","")).upper() in ("TAKE_PROFIT_MARKET","STOP_MARKET"):
-                    try: client.cancel_order(order["id"],order.get("symbol"))
-                    except Exception as exc: db.insert_log("ERROR","executor",f"撤条件单失败 {aid}: {exc}")
-        except Exception as exc: db.insert_log("ERROR","executor",f"查询条件单失败 {aid}: {exc}")
+            # 条件单已迁到 Algo 服务，普通订单列表看不到，必须走 openAlgoOrders
+            for pos in _positions(client):
+                _cancel_conditional_orders(client, pos.get("symbol"), str(pos.get("side") or "").upper())
+        except Exception as exc: db.insert_log("ERROR","executor",f"撤条件单失败 {aid}: {exc}")
     for aid,client in ccxt_clients.items():
         try: positions=_positions(client)
         except Exception as exc: failed+=1; remaining.append({"account_id":aid,"error":str(exc)}); continue
