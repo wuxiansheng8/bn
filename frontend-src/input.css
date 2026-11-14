@@ -23,6 +23,11 @@
     td{@apply px-3 py-2 border-t border-ink-200 dark:border-ink-800 text-sm}
     .skeleton{@apply animate-pulse bg-ink-200 dark:bg-ink-800 rounded}
     .num-right td:not(:first-child){text-align:right}
+    /* 数字列表头必须跟数据同侧，否则表头贴左、数字贴右，看起来像列错位 */
+    .num-right th:not(:first-child){text-align:right}
+    .num-right th, .num-right .badge{white-space:nowrap}
+    /* 徽标列（方向/状态）显式居中；必须放在右对齐规则之后才能覆盖 */
+    .num-right th.text-center, .num-right td.text-center{text-align:center}
     .modal-overlay{@apply fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4}
     .modal-box{@apply card w-full max-w-3xl max-h-[85vh] flex flex-col}
     .pnl-pos{@apply text-ok font-medium} .pnl-neg{@apply text-err font-medium}
