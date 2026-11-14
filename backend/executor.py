@@ -54,7 +54,9 @@ def init_ccxt_clients(conn) -> dict[int, object]:
     clients = {}
     for row in conn.execute("SELECT id,api_key_enc,api_secret_enc FROM api_accounts WHERE is_enabled=1"):
         try:
-            clients[int(row["id"])] = ccxt.binance({"apiKey": decrypt(row["api_key_enc"]), "secret": decrypt(row["api_secret_enc"]), "enableRateLimit": True, "options": {"defaultType": "future"}})
+            # fetchMarkets 只加载 USDT 本位合约：现货与合约的 market id 同名（都是 ZECUSDT），
+            # 混在一起会让 _symbol 解析到现货市场（2026-11-15 手动平仓静默失效的根因）。
+            clients[int(row["id"])] = ccxt.binance({"apiKey": decrypt(row["api_key_enc"]), "secret": decrypt(row["api_secret_enc"]), "enableRateLimit": True, "options": {"defaultType": "future", "fetchMarkets": ["linear"]}})
         except Exception as exc: db.insert_log("ERROR", "executor", f"账户 {row['id']} CCXT 初始化失败: {exc}")
     return clients
 
@@ -76,14 +78,26 @@ def _positions(client):
 
 
 def _symbol(client, raw):
+    """把「ZECUSDT」这类原始符号解析成 ccxt 的统一符号。
+
+    2026-11-15 修复：币安现货与合约的 market id 同名（都是 ZECUSDT），
+    旧实现会先命中现货市场 ZEC/USDT，导致：
+      ① _find_position 与持仓（ZEC/USDT:USDT）匹配不上 → 手动平仓静默返回 closed=0；
+      ② 算量用的是现货的 stepSize/precision，而非合约的。
+    现在只认合约市场（contract=True 或带 :USDT 后缀），现货一律跳过；
+    实在找不到就返回合成符号，让下单明确报错，而不是悄悄走到现货。
+    """
     markets = getattr(client, "markets", {}) or {}
     if not markets:
         try: markets = client.load_markets()
         except Exception: pass
-    if raw in markets: return raw
+    if raw in markets and (markets[raw].get("contract") is True or str(raw).endswith(":USDT")): return raw
     candidate = raw.replace("/", "").replace(":USDT", "")
     for key, market in markets.items():
-        if market.get("id") == candidate or key.replace("/", "").replace(":USDT", "") == candidate: return key
+        if market.get("id") != candidate and key.replace("/", "").replace(":USDT", "") != candidate:
+            continue
+        if market.get("contract") is True or str(key).endswith(":USDT"):
+            return key
     return candidate[:-4] + "/USDT:USDT" if candidate.endswith("USDT") else raw
 
 
@@ -120,10 +134,23 @@ def check_margin_gate(account_id: int, estimated_margin: float, conn) -> bool:
 
 
 def _find_position(client, symbol, position_side):
-    """取我方该币种方向的实际持仓；无持仓返回 None。"""
-    return next((p for p in _positions(client)
-                 if p.get("symbol") == symbol
-                 and str(p.get("side", "")).lower() == position_side.lower()), None)
+    """取我方该币种方向的实际持仓；无持仓返回 None。
+
+    2026-11-15 修复：不再直接比较 ccxt 的 symbol 字符串
+    （"ZECUSDT" / "ZEC/USDT" / "ZEC/USDT:USDT" 混用会匹配不到），
+    改为按「币种 id」比较，并兼容 info.positionSide 与 unified side 两种来源。
+    """
+    want = str(symbol).upper().replace("/", "").replace(":USDT", "")
+    side = str(position_side).lower()
+    for p in _positions(client):
+        info = p.get("info") or {}
+        raw_id = str(info.get("symbol") or "").upper() or str(p.get("symbol") or "").upper().replace("/", "").replace(":USDT", "")
+        if raw_id != want:
+            continue
+        p_side = str(info.get("positionSide") or p.get("side") or "").lower()
+        if p_side == side:
+            return p
+    return None
 
 
 def _apply_leverage(client, symbol: str, leverage: int) -> int:
@@ -261,7 +288,9 @@ def close_position(account_id: int, symbol: str, position_side: str, fraction: f
     qty=float(client.amount_to_precision(sym,qty)) if qty else 0
     if not (_config_getter() or {}).get("live_trading_enabled",False):
         db.insert_log("INFO","executor",f"[模拟] 手动平仓账户 {account_id} {symbol} qty={qty}（未下单，不打接管标记）"); return {"ok":True,"closed":qty,"simulated":True}
-    if qty<=0: return {"ok":True,"closed":0,"simulated":False}
+    if qty<=0:
+        db.insert_log("WARN","executor",f"手动平仓未找到持仓：{symbol} {side}（账户 {account_id}，fraction={fraction}），未下单")
+        return {"ok":True,"closed":0,"simulated":False,"warning":"未找到该币种方向的持仓，未下单"}
     order=client.create_order(sym,"market","sell" if side=="LONG" else "buy",qty,None,{"positionSide":side})
     _override(db.get_conn(),account_id,portfolio_id,symbol,side)
     if fraction>=1:
