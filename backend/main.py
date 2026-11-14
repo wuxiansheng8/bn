@@ -564,7 +564,7 @@ def position_resume(payload: dict[str,Any], token: str | None=None):
 
 
 @app.get("/api/settings/api-accounts")
-async def settings_accounts(token: str | None=None): return await accounts(token)
+def settings_accounts(token: str | None=None): return accounts(token)
 
 
 @app.post("/api/settings/api-accounts")
