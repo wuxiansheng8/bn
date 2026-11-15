@@ -75,7 +75,7 @@ def _record(account_id: int, ok: bool, err: str, now: float) -> None:
 
 
 def send(account, kind: str, title: str, description: str, labels: dict | None = None,
-         force: bool = False, use_cooldown: bool = True) -> dict:
+         use_cooldown: bool = True) -> dict:
     """推送一条 Critical 事件。account 为 api_accounts 行（含 phone_key）。"""
     key = extract_key(account["phone_key"] if "phone_key" in account.keys() else "")
     if not key:
@@ -138,4 +138,4 @@ def send_test(account) -> dict:
     title = f"[测试] {account['remark']} · 电话提醒测试"
     desc = f"这是一条测试消息，收到说明电话/短信通道正常 · {time.strftime('%H:%M:%S')}"
     return send(account, "test", title, desc, {"account": account["remark"], "test": "1"},
-                force=True, use_cooldown=False)
+                use_cooldown=False)
