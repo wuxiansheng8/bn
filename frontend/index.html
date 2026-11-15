@@ -106,15 +106,18 @@
                 <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">保证金余额</div><div class="font-semibold">{{fNum(t.margin_balance)}} U</div></div>
                 <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">实际杠杆 <span class="text-ink-300">(持仓÷保证金)</span></div><div class="font-semibold">{{traderLeverage(t)}}x</div></div>
                 <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">持仓总价值 <span class="text-ink-300">(均价估算)</span></div><div class="font-semibold">{{fNum(traderPosValue(t))}} U</div></div>
-                <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">当前浮盈亏 <span class="text-ink-300">(实时估算)</span></div><div class="font-semibold text-ink-300">--</div></div>
+                <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">当前浮盈亏 <span class="text-ink-300">(实时估算)</span></div><div class="font-semibold" :class="traderPnl(t)==null?'':(traderPnl(t)>=0?'pnl-pos':'pnl-neg')">{{traderPnl(t)==null?'--':fSigned(traderPnl(t))}}</div></div>
               </div>
               <div class="space-y-1">
                 <template v-if="traderPositionList(t).length">
-                  <div v-for="pos in traderPositionList(t)" :key="pos.symbol+pos.side" class="flex items-center justify-between text-xs py-1 border-b border-ink-100 dark:border-ink-800 last:border-0">
-                    <span class="font-medium">{{pos.symbol}}</span><span class="badge" :class="pos.side==='LONG'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{pos.side==='LONG'?'多':'空'}}</span>
-                    <span>{{fNum(pos.qty,4)}}</span><span class="text-ink-400">{{fNum(pos.qty*pos.avg_price)}} U</span><span class="text-ink-400">均价 {{fNum(pos.avg_price)}}</span>
-                  </div>
-                </template>
+                    <table class="num-right"><thead><tr><th class="text-left">币种/方向</th><th>总数量</th><th>持仓总价值</th><th>开仓均价</th><th>盈亏</th></tr></thead><tbody>
+                      <tr v-for="pos in traderPositionList(t)" :key="pos.symbol+pos.side">
+                        <td class="text-left"><span class="font-medium">{{pos.symbol}}</span><span class="badge ml-1" :class="pos.side==='LONG'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{pos.side==='LONG'?'多':'空'}}</span></td>
+                        <td>{{fNum(pos.qty,4)}}</td><td>{{fNum(pos.qty*pos.avg_price)}} U</td><td>{{fNum(pos.avg_price)}}</td>
+                        <td :class="pos.pnl==null?'text-ink-300':(pos.pnl>=0?'pnl-pos':'pnl-neg')">{{pos.pnl==null?'--':fSigned(pos.pnl)}}</td>
+                      </tr>
+                    </tbody></table>
+                  </template>
                 <div v-else class="text-xs text-ink-400 py-2 text-center">当前空仓</div>
               </div>
               <div v-if="traderPositionList(t).length" class="flex h-1.5 rounded-full overflow-hidden gap-0.5"><div class="bg-ok rounded-full" :style="{width: traderLongPct(t)+'%'}"></div><div class="bg-err rounded-full" :style="{width: (100-traderLongPct(t))+'%'}"></div></div>
@@ -305,6 +308,7 @@ createApp({
     // 账户/交易员/仓位/订单
     const accounts = ref([]); const accountsLoading = ref(false); const accountsErr = ref('');
     const traders = ref([]); const tradersLoading = ref(false); const tradersErr = ref('');
+    const priceMap = ref({});   // 标记价：WS price_update 实时写入，用于卡片盈亏
     const allPositions = ref([]); const posLoading = ref(false); const posErr = ref('');
     const copyOrders = ref([]); const copyOrdersLoading = ref(false); const copyOrdersOffset = ref(0);
 
@@ -388,6 +392,7 @@ createApp({
         else if (m.type==='account_update') { const idx=accounts.value.findIndex(a=>a.id===m.id); if (idx!==-1) Object.assign(accounts.value[idx], m); }
         else if (m.type==='trader_update') { const t=traders.value.find(t=>t.portfolio_id===m.portfolio_id); if (t) t.last_sync_ts=m.last_sync_ts; }
         else if (m.type==='position_update') { const t=traders.value.find(t=>t.portfolio_id===m.portfolio_id); if (t&&m.positions) { t.hidden_positions_json=JSON.stringify(m.positions); t._positions=m.positions; } }
+    else if (m.type==='price_update' && m.prices) { for (const p of m.prices) priceMap.value[p.symbol]=p.mark_price; }
       } catch(e) {} };
     }
 
@@ -425,7 +430,15 @@ createApp({
 
     function traderName(pid) { if (!pid) return '--'; const t=traders.value.find(t=>t.portfolio_id===pid); return t?(t.nickname||pid):pid; }
     function followingAccounts(pid) { return accounts.value.filter(a=>a.followed_trader_id===pid); }
-    function traderPositionList(t) { const pos=t._positions||{}; const r=[]; for (const [s,sides] of Object.entries(pos)) for (const [side,d] of Object.entries(sides)) if (d&&d.qty>0) r.push({symbol:s,side,qty:d.qty,avg_price:d.avg_price}); return r; }
+    function traderPositionList(t) { const pos=t._positions||{}; const r=[]; const live=priceMap.value||{}; const snap=t.mark_prices||{};
+      for (const [s,sides] of Object.entries(pos)) for (const [side,d] of Object.entries(sides)) if (d&&d.qty>0) {
+        const mark = live[s] ?? snap[s] ?? null;
+        const pnl = (mark==null||!d.avg_price) ? null : (mark-d.avg_price)*d.qty*(side==='LONG'?1:-1);
+        r.push({symbol:s,side,qty:d.qty,avg_price:d.avg_price,mark,pnl});
+      }
+      return r; }
+    function traderPnl(t) { const l=traderPositionList(t); if (!l.length || l.some(p=>p.pnl==null)) return null; return l.reduce((s,p)=>s+p.pnl,0); }
+    function fSigned(n,dec=2) { if (n==null) return '--'; const v=Number(n); return (v>=0?'+':'')+v.toFixed(dec); }
     function traderPosValue(t) { return traderPositionList(t).reduce((s,p)=>s+p.qty*p.avg_price,0); }
     function traderLeverage(t) { const v=traderPosValue(t); const m=+t.margin_balance||0; return m?fNum(v/m,1):'--'; }
     function traderLongPct(t) { const l=traderPositionList(t); const lv=l.filter(p=>p.side==='LONG').reduce((s,p)=>s+p.qty*p.avg_price,0); const sv=l.filter(p=>p.side==='SHORT').reduce((s,p)=>s+p.qty*p.avg_price,0); const t2=lv+sv; return t2?Math.round(lv/t2*100):50; }
@@ -538,6 +551,7 @@ createApp({
     onUnmounted(() => { clearInterval(logsTimer); clearTimeout(logDebounceTimer); if (ws) ws.close(); });
 
     return {
+      priceMap, traderPnl, fSigned,
       menus, currentMenu, currentLabel, switchMenu, authed, loginForm, loggingIn, loginErr, doLogin, needSetup, setupConfirm, doSetup,
       systemOnline, liveEnabled, wsConnected, darkTheme, toggleTheme, toggleLiveTrading,
       accounts, accountsLoading, accountsErr, loadAccounts, traders, tradersLoading, tradersErr, loadTraders,

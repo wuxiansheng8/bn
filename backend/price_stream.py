@@ -146,6 +146,11 @@ def stop_price_stream() -> None:
     if _thread and _thread.is_alive(): _thread.join(timeout=3)
 
 
+def snapshot() -> dict[str, float]:
+    """当前标记价快照（symbol -> price），供接口首屏渲染浮盈亏。"""
+    return dict(_prices)
+
+
 def get_mark_price(symbol: str) -> float | None:
     return _prices.get(symbol.replace("/", "").replace(":USDT", "").upper()) or _prices.get(symbol.upper())
 

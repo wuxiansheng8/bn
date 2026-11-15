@@ -498,9 +498,25 @@ def account_positions(account_id: int, token: str | None = None):
     return out
 
 
+def _trader_symbols(row) -> list[str]:
+    """交易员当前持仓的币种（供标记价快照过滤）。"""
+    try:
+        data = json.loads(row.get("hidden_positions_json") or "{}")
+    except Exception:
+        return []
+    if not isinstance(data, dict): return []
+    return [str(s).upper() for s, sides in data.items()
+            if isinstance(sides, dict) and any(isinstance(v, dict) and v.get("qty") for v in sides.values())]
+
+
 @app.get("/api/traders")
 async def traders(token: str | None = None):
-    _auth(token); return [dict(r) for r in db.get_conn().execute("SELECT * FROM traders ORDER BY last_sync_ts DESC").fetchall()]
+    _auth(token)
+    rows = [dict(r) for r in db.get_conn().execute("SELECT * FROM traders ORDER BY last_sync_ts DESC").fetchall()]
+    prices = price_stream.snapshot()          # 首屏用标记价算浮盈亏，之后由 WS 实时更新
+    for row in rows:
+        row["mark_prices"] = {s: prices[s] for s in _trader_symbols(row) if s in prices}
+    return rows
 
 
 @app.get("/api/traders/{pid}/orders")
