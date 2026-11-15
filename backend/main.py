@@ -424,8 +424,8 @@ _balance_refreshed_at: dict[int, float] = {}
 _pnl_refreshed_at: dict[int, float] = {}
 
 
-def _refresh_balances(conn, rows, min_interval: float = 10.0) -> None:
-    """打开账户总览时向币安拉一次真实余额与累计已实现盈亏（方案 B），10 秒内不重复拉。
+def _refresh_balances(conn, rows, min_interval: float = 5.0) -> None:
+    """打开账户总览时向币安拉一次真实余额与累计已实现盈亏（方案 B），5 秒内不重复拉。
 
     必须是同步函数，由 FastAPI 丢进线程池执行（铁律 3：禁止在事件循环里调同步 requests）。
     已实现盈亏走 income 接口（权重 30），同样 10 秒节流。
