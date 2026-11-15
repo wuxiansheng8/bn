@@ -64,8 +64,8 @@
             <div class="card p-4"><div class="text-xs text-ink-400 mb-1">总权益</div><div class="text-xl font-bold">{{fNum(sumEquity)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
             <div class="card p-4"><div class="text-xs text-ink-400 mb-1">总可用</div><div class="text-xl font-bold">{{fNum(sumAvail)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
             <div class="card p-4"><div class="text-xs text-ink-400 mb-1">跟单持仓价值</div><div class="text-xl font-bold">{{fNum(sumPosVal)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
-            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">总浮盈亏</div><div class="text-xl font-bold" :class="sumUPnl>=0?'pnl-pos':'pnl-neg'">{{fNum(sumUPnl)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
-            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">总已实现</div><div class="text-xl font-bold" :class="sumRealized>=0?'pnl-pos':'pnl-neg'">{{fNum(sumRealized)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
+            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">跟单未实现盈亏</div><div class="text-xl font-bold" :class="sumUPnl>=0?'pnl-pos':'pnl-neg'">{{fNum(sumUPnl)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
+            <div class="card p-4"><div class="text-xs text-ink-400 mb-1">跟单已实现盈亏</div><div class="text-xl font-bold" :class="sumRealized>=0?'pnl-pos':'pnl-neg'">{{fNum(sumRealized)}}</div><div class="text-xs text-ink-400 mt-0.5">USDT</div></div>
           </div>
           <div class="flex justify-between items-center"><h3 class="font-semibold text-sm">账户列表</h3><button class="btn btn-danger btn-sm" @click="confirmEmergencyClose">🔴 紧急全平所有账户</button></div>
           <div v-if="accountsLoading" class="space-y-3"><div v-for="i in 2" :key="i" class="card p-4 space-y-2"><div class="skeleton h-4 w-32"></div><div class="skeleton h-3 w-48"></div><div class="skeleton h-3 w-40"></div></div></div>
@@ -83,8 +83,8 @@
                 <div><span class="text-ink-400">可用</span> <span class="font-medium">{{fNum(acc.cached_available)}} U</span><span class="text-ink-400 ml-1">{{acc.updated_at?'('+formatTime(acc.updated_at*1000).slice(11)+')':''}}</span></div>
                 <div><span class="text-ink-400">持仓数</span> <span class="font-medium">{{(acc._positions||[]).length}}</span></div>
                 <div><span class="text-ink-400">持仓价值</span> <span class="font-medium">{{fNum(acc._posVal)}} U</span></div>
-                <div><span class="text-ink-400">浮盈亏</span> <span class="font-medium" :class="acc._uPnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc._uPnl)}} U ({{fPct(acc._uPnlPct)}})</span></div>
-                <div><span class="text-ink-400">已实现</span> <span class="font-medium" :class="acc.realized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc.realized_pnl)}} U</span></div>
+                <div><span class="text-ink-400">未实现盈亏</span> <span class="font-medium" :class="acc._uPnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc._uPnl)}} U ({{fPct(acc._uPnlPct)}})</span></div>
+                <div><span class="text-ink-400">已实现盈亏</span> <span class="font-medium" :class="acc.realized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc.realized_pnl)}} U</span></div>
               </div>
               <div v-if="acc.status_msg" class="text-xs text-err">{{acc.status_msg}}</div>
             </div>
