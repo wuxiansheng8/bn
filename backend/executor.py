@@ -9,12 +9,13 @@ import time
 from pathlib import Path
 
 try:
-    from . import db, reconstructor, notifier
+    from . import db, reconstructor, notifier, phone_alert
     from .collector import signal_queue
 except ImportError:
     import db  # type: ignore
     import reconstructor  # type: ignore
     import notifier  # type: ignore
+    import phone_alert  # type: ignore
     from collector import signal_queue  # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -101,12 +102,18 @@ def _symbol(client, raw):
     return candidate[:-4] + "/USDT:USDT" if candidate.endswith("USDT") else raw
 
 
-def _insert_copy(account, signal, action, qty, price, status, reason="", scale=None):
+def _insert_copy(account, signal, action, qty, price, status, reason="", scale=None, partial=False):
     conn = db.get_conn(); trader = conn.execute("SELECT nickname FROM traders WHERE portfolio_id=?", (signal.get("portfolio_id"),)).fetchone()
     conn.execute("INSERT INTO copy_orders(api_account_id,api_remark,portfolio_id,trader_nickname,symbol,action,position_side,trader_qty,trader_price,my_qty,my_price,scale,status,error_msg,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (account["id"], account["remark"], signal.get("portfolio_id"), trader["nickname"] if trader else "", signal.get("symbol"), action, signal.get("position_side"), signal.get("executed_qty"), signal.get("avg_price"), qty, price, scale, status, reason, int(time.time()))); conn.commit()
     # P1-13：每条跟单记录同步写一条 TRADE 级别日志，「交易与跟单」筛选才有数据
     db.insert_log("TRADE", "executor", f"[{account['remark']}] {action} {signal.get('symbol')} {signal.get('position_side')} 数量={qty} 价格={price} → {status}{(' ' + reason) if reason else ''}")
+    # 电话/短信提醒（按账户独立，只对 SUCCESS/FAILED 发；失败不影响主流程）
+    try:
+        phone_alert.notify_copy(account, signal, action, qty, price, status, reason,
+                                trader=(trader["nickname"] if trader else ""), partial=partial)
+    except Exception as exc:  # noqa: BLE001
+        db.insert_log("WARN", "executor", f"电话提醒调用异常: {exc}")
 
 
 def _override(conn, aid, pid, symbol, side, **fields):
@@ -311,7 +318,7 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
                     if qty<=0: _insert_copy(account,signal,"CLOSE",0,price,"SKIPPED","NO_POSITION"); continue
                     if not live:
                         db.insert_log("INFO","executor",f"[模拟] 平仓账户 {aid} {symbol} qty={qty}"); _insert_copy(account,signal,"CLOSE",qty,price,"SKIPPED","SIMULATED"); continue
-                    side="sell" if signal["position_side"]=="LONG" else "buy"; order=client.create_order(symbol,"market",side,qty,None,{"positionSide":signal["position_side"],"newOrderRespType":"RESULT"}); _insert_copy(account,signal,"CLOSE",qty,float(order.get("average") or price),"SUCCESS"); notifier.notify("trade_close",f"跟单平仓 {symbol} 数量 {qty}"); _refresh_equity_cache(aid)
+                    side="sell" if signal["position_side"]=="LONG" else "buy"; order=client.create_order(symbol,"market",side,qty,None,{"positionSide":signal["position_side"],"newOrderRespType":"RESULT"}); _insert_copy(account,signal,"CLOSE",qty,float(order.get("average") or price),"SUCCESS",partial=(ratio<.98)); notifier.notify("trade_close",f"跟单平仓 {symbol} 数量 {qty}"); _refresh_equity_cache(aid)
                     if ratio>=.98:
                         # 我方该币种方向已全平 → 撤掉残留的价格条件单（文档 5.4）
                         _cancel_conditional_orders(client,symbol,signal["position_side"])

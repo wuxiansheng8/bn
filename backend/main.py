@@ -17,9 +17,10 @@ from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
 
 try:
-    from . import db
+    from . import db, phone_alert
 except ImportError:
     import db  # type: ignore
+    import phone_alert  # type: ignore
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -855,6 +856,52 @@ async def put_poll_tg(payload: dict[str,Any], token: str | None=None):
 @app.post("/api/settings/tg/test")
 async def test_tg(token: str | None=None):
     _auth(token); notifier.notify("trade_open","这是一条测试通知",force=True); return {"ok":True}
+
+
+# ── ⑤ 电话提醒（FlashDuty）：每个 API 账户一个可选推送地址 ──
+@app.get("/api/settings/phone-alerts")
+def list_phone_alerts(token: str | None=None):
+    """账户列表 + 各自是否已配置推送地址（地址掩码，不回传明文）。"""
+    _auth(token)
+    rows = db.get_conn().execute(
+        "SELECT id,remark,is_enabled,phone_key,phone_last_status,phone_last_at FROM api_accounts ORDER BY id"
+    ).fetchall()
+    return [{
+        "id": r["id"], "remark": r["remark"], "is_enabled": r["is_enabled"],
+        "has_key": bool(phone_alert.extract_key(r["phone_key"] or "")),
+        "masked": phone_alert.masked(r["phone_key"] or ""),
+        "last_status": r["phone_last_status"] or "",
+        "last_at": r["phone_last_at"] or 0,
+    } for r in rows]
+
+
+@app.put("/api/settings/phone-alerts/{account_id}")
+async def save_phone_alert(account_id: int, payload: dict[str,Any], token: str | None=None):
+    """保存/清空某账户的推送地址。传空字符串 = 清空（该账户不再提醒）。"""
+    _auth(token)
+    url = str(payload.get("url") or "").strip()
+    if url and not phone_alert.extract_key(url):
+        raise HTTPException(400, "推送地址缺少 integration_key")
+    conn = db.get_conn()
+    if not conn.execute("SELECT 1 FROM api_accounts WHERE id=?", (account_id,)).fetchone():
+        raise HTTPException(404, "账户不存在")
+    conn.execute("UPDATE api_accounts SET phone_key=?, phone_last_status='', phone_last_at=0 WHERE id=?",
+                 (url, account_id))
+    conn.commit()
+    db.insert_log("INFO", "phone", f"账户 {account_id} 电话提醒地址{'已清空' if not url else '已保存'}")
+    return {"ok": True, "has_key": bool(url)}
+
+
+@app.post("/api/settings/phone-alerts/{account_id}/test")
+def test_phone_alert(account_id: int, token: str | None=None):
+    """发送测试提醒（Critical，走与真实告警完全相同的渠道）。"""
+    _auth(token)
+    row = db.get_conn().execute("SELECT * FROM api_accounts WHERE id=?", (account_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "账户不存在")
+    if not phone_alert.extract_key(row["phone_key"] or ""):
+        raise HTTPException(400, "该账户还没有配置推送地址")
+    return phone_alert.send_test(row)
 
 
 @app.get("/api/logs")

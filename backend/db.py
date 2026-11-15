@@ -104,6 +104,16 @@ def init_db() -> None:
     if "error_msg" not in proxy_cols:
         cur.execute("ALTER TABLE proxy_nodes ADD COLUMN error_msg TEXT DEFAULT ''")
 
+    # 兼容旧库：api_accounts 补电话提醒三列（2026-11-16）
+    account_cols = {row[1] for row in cur.execute("PRAGMA table_info(api_accounts)")}
+    for col, ddl in (
+        ("phone_key", "ALTER TABLE api_accounts ADD COLUMN phone_key TEXT DEFAULT ''"),
+        ("phone_last_status", "ALTER TABLE api_accounts ADD COLUMN phone_last_status TEXT DEFAULT ''"),
+        ("phone_last_at", "ALTER TABLE api_accounts ADD COLUMN phone_last_at INTEGER DEFAULT 0"),
+    ):
+        if col not in account_cols:
+            cur.execute(ddl)
+
     # 5. 手动接管表
     cur.execute("""
         CREATE TABLE IF NOT EXISTS manual_overrides (

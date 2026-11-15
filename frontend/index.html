@@ -206,6 +206,26 @@
           </div>
         </div>
 
+        <div class="card p-4 space-y-3">
+          <h3 class="font-semibold text-sm">⑤ 电话提醒（FlashDuty）</h3>
+          <p class="text-xs text-ink-400">每个 API 账户可单独填写 FlashDuty 推送地址；开仓 / 减仓 / 平仓 / 下单失败会推送到对应地址。最终是否打电话由 FlashDuty 的分派策略决定。留空 = 该账户不提醒。</p>
+          <div v-for="row in phoneAlerts" :key="row.id" class="border border-ink-200 dark:border-ink-800 rounded-lg p-3 space-y-2">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-medium text-sm">{{row.remark}}</span>
+              <span class="badge text-xs" :class="row.has_key?'bg-ok/10 text-ok':'bg-ink-100 text-ink-400'">{{row.has_key?'已配置':'未配置'}}</span>
+              <span v-if="row.last_at" class="text-xs" :class="row.last_status==='ok'?'text-ok':'text-err'">上次推送：{{row.last_status==='ok'?'成功':'失败 ' + (row.last_status||'').replace('fail:','')}} · {{formatTime(row.last_at*1000)}}</span>
+            </div>
+            <div class="flex gap-2 items-center">
+              <input v-model="row._url" class="input font-mono text-xs flex-1" :placeholder="row.masked || 'https://api.flashcat.cloud/event/push/alert/standard?integration_key=...'" />
+              <button class="btn btn-primary btn-sm" @click="savePhoneAlert(row)">保存</button>
+              <button class="btn btn-ghost btn-sm" @click="testPhoneAlert(row)" :disabled="!row.has_key">发送测试</button>
+              <button class="btn btn-ghost btn-sm" @click="clearPhoneAlert(row)" :disabled="!row.has_key">清空</button>
+            </div>
+            <div v-if="row._msg" class="text-xs" :class="row._ok?'text-ok':'text-err'">{{row._msg}}</div>
+          </div>
+          <div v-if="!phoneAlerts.length" class="text-xs text-ink-400">还没有 API 账户，请先在「① 币安 API 账户」里添加。</div>
+        </div>
+
         <!-- 菜单5：日志 -->
         <div v-if="currentMenu==='logs'" class="space-y-3">
           <div class="card p-3 flex flex-wrap gap-2 items-center">
@@ -473,6 +493,34 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
     function traderLongPct(t) { const l=traderPositionList(t); const lv=l.filter(p=>p.side==='LONG').reduce((s,p)=>s+p.qty*p.avg_price,0); const sv=l.filter(p=>p.side==='SHORT').reduce((s,p)=>s+p.qty*p.avg_price,0); const t2=lv+sv; return t2?Math.round(lv/t2*100):50; }
 
     // ── 设置页：API 账户 ──
+    // ── 设置页：⑤ 电话提醒（FlashDuty）──
+    const phoneAlerts = ref([]);
+    async function loadPhoneAlerts() {
+      try { phoneAlerts.value = (await apiFetch('/api/settings/phone-alerts')).map(r => ({...r, _url:'', _msg:'', _ok:true})); }
+      catch(e) { /* 静默失败，不影响其他设置 */ }
+    }
+    async function savePhoneAlert(row) {
+      try {
+        const r = await apiFetch(`/api/settings/phone-alerts/${row.id}`, {method:'PUT', body:{url:row._url}});
+        row._ok = true; row._msg = r.has_key ? '已保存' : '已清空';
+        await loadPhoneAlerts();
+      } catch(e) { row._ok = false; row._msg = '保存失败：' + e.message; }
+    }
+    async function clearPhoneAlert(row) {
+      row._url = '';
+      try { await apiFetch(`/api/settings/phone-alerts/${row.id}`, {method:'PUT', body:{url:''}}); await loadPhoneAlerts(); }
+      catch(e) { row._ok = false; row._msg = '清空失败：' + e.message; }
+    }
+    async function testPhoneAlert(row) {
+      row._ok = true; row._msg = '发送中…';
+      try {
+        const r = await apiFetch(`/api/settings/phone-alerts/${row.id}/test`, {method:'POST'});
+        row._ok = !!r.ok;
+        row._msg = r.ok ? ('已发送，request_id=' + (r.request_id || '-')) : ('失败：' + (r.error || r.skipped || '未知错误'));
+        await loadPhoneAlerts();
+      } catch(e) { row._ok = false; row._msg = '失败：' + e.message; }
+    }
+
     async function loadSettingsAccounts() { settingsAccountsLoading.value=true; try { settingsAccounts.value=await apiFetch('/api/settings/api-accounts'); } catch(e) {} finally { settingsAccountsLoading.value=false; } }
     function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:''}); accountFormErr.value=''; showAccountModal.value=true; }
     function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||''}); accountFormErr.value=''; showAccountModal.value=true; }
@@ -566,7 +614,7 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
       if (val==='monitor') loadTraders();
       if (val==='positions') { loadAllPositions(); loadCopyOrders(); }
       if (val==='logs') loadLogs();
-      if (val==='settings') { loadSettingsAccounts(); loadSettingsTraders(); loadProxies(); loadPollTg(); }
+      if (val==='settings') { loadSettingsAccounts(); loadSettingsTraders(); loadProxies(); loadPollTg(); loadPhoneAlerts(); }
     });
 
     onMounted(() => {
@@ -581,6 +629,7 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
 
     return {
       priceMap, traderPnl, fSigned, accLivePnl, accLivePosVal, accLiveEquity, accLivePct,
+      phoneAlerts, loadPhoneAlerts, savePhoneAlert, clearPhoneAlert, testPhoneAlert,
       menus, currentMenu, currentLabel, switchMenu, authed, loginForm, loggingIn, loginErr, doLogin, needSetup, setupConfirm, doSetup,
       systemOnline, liveEnabled, wsConnected, darkTheme, toggleTheme, toggleLiveTrading,
       accounts, accountsLoading, accountsErr, loadAccounts, traders, tradersLoading, tradersErr, loadTraders,
