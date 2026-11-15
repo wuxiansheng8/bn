@@ -204,26 +204,26 @@
             <div class="flex gap-2"><button class="btn btn-primary btn-sm" @click="savePollTg()">保存</button><button class="btn btn-ghost btn-sm" @click="testTg()">发送测试通知</button></div>
             <div v-if="tgTestMsg" class="text-xs" :class="tgTestOk?'text-ok':'text-err'">{{tgTestMsg}}</div>
           </div>
-        </div>
 
-        <div class="card p-4 space-y-3">
-          <h3 class="font-semibold text-sm">⑤ 电话提醒（FlashDuty）</h3>
-          <p class="text-xs text-ink-400">每个 API 账户可单独填写 FlashDuty 推送地址；开仓 / 减仓 / 平仓 / 下单失败会推送到对应地址。最终是否打电话由 FlashDuty 的分派策略决定。留空 = 该账户不提醒。</p>
-          <div v-for="row in phoneAlerts" :key="row.id" class="border border-ink-200 dark:border-ink-800 rounded-lg p-3 space-y-2">
-            <div class="flex items-center gap-2 flex-wrap">
-              <span class="font-medium text-sm">{{row.remark}}</span>
-              <span class="badge text-xs" :class="row.has_key?'bg-ok/10 text-ok':'bg-ink-100 text-ink-400'">{{row.has_key?'已配置':'未配置'}}</span>
-              <span v-if="row.last_at" class="text-xs" :class="row.last_status==='ok'?'text-ok':'text-err'">上次推送：{{row.last_status==='ok'?'成功':'失败 ' + (row.last_status||'').replace('fail:','')}} · {{formatTime(row.last_at*1000)}}</span>
+          <div class="card p-4 space-y-3">
+            <h3 class="font-semibold text-sm">⑤ 电话提醒（FlashDuty）</h3>
+            <p class="text-xs text-ink-400">每个 API 账户可单独填写 FlashDuty 推送地址；开仓 / 减仓 / 平仓 / 下单失败会推送到对应地址。最终是否打电话由 FlashDuty 的分派策略决定。留空 = 该账户不提醒。</p>
+            <div v-for="row in phoneAlerts" :key="row.id" class="border border-ink-200 dark:border-ink-800 rounded-lg p-3 space-y-2">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-medium text-sm">{{row.remark}}</span>
+                <span class="badge text-xs" :class="row.has_key?'bg-ok/10 text-ok':'bg-ink-100 text-ink-400'">{{row.has_key?'已配置':'未配置'}}</span>
+                <span v-if="row.last_at" class="text-xs" :class="row.last_status==='ok'?'text-ok':'text-err'">上次推送：{{row.last_status==='ok'?'成功':'失败 ' + (row.last_status||'').replace('fail:','')}} · {{formatTime(row.last_at*1000)}}</span>
+              </div>
+              <div class="flex gap-2 items-center">
+                <input v-model="row._url" class="input font-mono text-xs flex-1" :placeholder="row.masked || 'https://api.flashcat.cloud/event/push/alert/standard?integration_key=...'" />
+                <button class="btn btn-primary btn-sm" @click="savePhoneAlert(row)">保存</button>
+                <button class="btn btn-ghost btn-sm" @click="testPhoneAlert(row)" :disabled="!row.has_key">发送测试</button>
+                <button class="btn btn-ghost btn-sm" @click="clearPhoneAlert(row)" :disabled="!row.has_key">清空</button>
+              </div>
+              <div v-if="row._msg" class="text-xs" :class="row._ok?'text-ok':'text-err'">{{row._msg}}</div>
             </div>
-            <div class="flex gap-2 items-center">
-              <input v-model="row._url" class="input font-mono text-xs flex-1" :placeholder="row.masked || 'https://api.flashcat.cloud/event/push/alert/standard?integration_key=...'" />
-              <button class="btn btn-primary btn-sm" @click="savePhoneAlert(row)">保存</button>
-              <button class="btn btn-ghost btn-sm" @click="testPhoneAlert(row)" :disabled="!row.has_key">发送测试</button>
-              <button class="btn btn-ghost btn-sm" @click="clearPhoneAlert(row)" :disabled="!row.has_key">清空</button>
-            </div>
-            <div v-if="row._msg" class="text-xs" :class="row._ok?'text-ok':'text-err'">{{row._msg}}</div>
+            <div v-if="!phoneAlerts.length" class="text-xs text-ink-400">还没有 API 账户，请先在「① 币安 API 账户」里添加。</div>
           </div>
-          <div v-if="!phoneAlerts.length" class="text-xs text-ink-400">还没有 API 账户，请先在「① 币安 API 账户」里添加。</div>
         </div>
 
         <!-- 菜单5：日志 -->
