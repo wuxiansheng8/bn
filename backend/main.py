@@ -409,7 +409,7 @@ async def m5_startup() -> None:
     db.set_log_hook(_push_log)
     # Collector bootstrap performs synchronous REST calls; isolate startup from the event loop.
     threading.Thread(target=start_collector, daemon=True, name="collector-startup").start()
-    executor.start_executor(ccxt_clients, ws_mgr.broadcast, load_config)
+    executor.start_executor(ccxt_clients, _push_log, load_config)   # 传线程安全的同步包装
     price_stream.start_price_stream(ws_mgr.broadcast)
 
 

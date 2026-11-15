@@ -79,11 +79,11 @@
               </div>
               <div class="text-xs text-ink-400">跟随：{{traderName(acc.followed_trader_id)}}</div>
               <div class="grid grid-cols-2 gap-2 text-xs">
-                <div><span class="text-ink-400">净值</span> <span class="font-medium">{{fNum(acc.cached_equity)}} U</span></div>
+                <div><span class="text-ink-400">净值</span> <span class="font-medium">{{fNum(accLiveEquity(acc))}} U</span></div>
                 <div><span class="text-ink-400">可用</span> <span class="font-medium">{{fNum(acc.cached_available)}} U</span><span class="text-ink-400 ml-1">{{acc.updated_at?'('+formatTime(acc.updated_at*1000).slice(11)+')':''}}</span></div>
                 <div><span class="text-ink-400">持仓数</span> <span class="font-medium">{{(acc._positions||[]).length}}</span></div>
-                <div><span class="text-ink-400">持仓价值</span> <span class="font-medium">{{fNum(acc._posVal)}} U</span></div>
-                <div><span class="text-ink-400">未实现盈亏</span> <span class="font-medium" :class="acc._uPnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc._uPnl)}} U ({{fPct(acc._uPnlPct)}})</span></div>
+                <div><span class="text-ink-400">持仓价值</span> <span class="font-medium">{{fNum(accLivePosVal(acc))}} U</span></div>
+                <div><span class="text-ink-400">未实现盈亏</span> <span class="font-medium" :class="accLivePnl(acc)>=0?'pnl-pos':'pnl-neg'">{{fNum(accLivePnl(acc))}} U ({{fPct(accLivePct(acc))}})</span></div>
                 <div><span class="text-ink-400">已实现盈亏</span> <span class="font-medium" :class="acc.realized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc.realized_pnl)}} U</span></div>
               </div>
               <div v-if="acc.status_msg" class="text-xs text-err">{{acc.status_msg}}</div>
@@ -335,10 +335,10 @@ createApp({
     const showTpSlModal = ref(false); const tpSlTarget = ref(null); const tpSlForm = reactive({ tp_price:null, sl_price:null });
 
     // 汇总
-    const sumEquity = computed(() => accounts.value.reduce((s,a)=>s+(+a.cached_equity||0),0));
+    const sumEquity = computed(() => accounts.value.reduce((s,a)=>s+accLiveEquity(a),0));
     const sumAvail = computed(() => accounts.value.reduce((s,a)=>s+(+a.cached_available||0),0));
-    const sumPosVal = computed(() => accounts.value.reduce((s,a)=>s+(a._posVal||0),0));
-    const sumUPnl = computed(() => accounts.value.reduce((s,a)=>s+(a._uPnl||0),0));
+    const sumPosVal = computed(() => accounts.value.reduce((s,a)=>s+accLivePosVal(a),0));
+    const sumUPnl = computed(() => accounts.value.reduce((s,a)=>s+accLivePnl(a),0));
     const sumRealized = computed(() => accounts.value.reduce((s,a)=>s+(+a.realized_pnl||0),0));
     const okProxyCount = computed(() => proxies.value.filter(p => p.status === 'OK').length);
     const theoryFreq = computed(() => { const n = okProxyCount.value; if (!n) return '0.00'; const beat = pollTg.poll_interval_sec||2.5; return Math.min(n/2.05, 1/beat).toFixed(2); });
@@ -389,7 +389,7 @@ createApp({
       ws.onerror = () => { wsConnected.value=false; };
       ws.onmessage = (ev) => { try { const m=JSON.parse(ev.data);
         if (m.type==='log') { logs.value.unshift(m); if (logs.value.length>500) logs.value.length=500; }
-        else if (m.type==='account_update') { const idx=accounts.value.findIndex(a=>a.id===m.id); if (idx!==-1) Object.assign(accounts.value[idx], m); }
+        else if (m.type==='account_update') { const idx=accounts.value.findIndex(a=>a.id===m.id); if (idx!==-1) { const a=accounts.value[idx]; a._equityBase=+m.cached_equity||0; a._uPnlBase=accLivePnl(a); Object.assign(a, m); } }
         else if (m.type==='trader_update') { const t=traders.value.find(t=>t.portfolio_id===m.portfolio_id); if (t) t.last_sync_ts=m.last_sync_ts; }
         else if (m.type==='position_update') { const t=traders.value.find(t=>t.portfolio_id===m.portfolio_id); if (t&&m.positions) { t.hidden_positions_json=JSON.stringify(m.positions); t._positions=m.positions; } }
     else if (m.type==='price_update' && m.prices) { for (const p of m.prices) priceMap.value[p.symbol]=p.mark_price; }
@@ -404,10 +404,31 @@ createApp({
 
     async function loadAccounts() { accountsLoading.value=true; accountsErr.value=''; try {
       const data = await apiFetch('/api/accounts');
-      accounts.value = await Promise.all(data.map(async acc => { try { const pos=await apiFetch(`/api/accounts/${acc.id}/positions`); const posVal=pos.reduce((s,p)=>s+(+p.qty||0)*(+p.mark_price||+p.avg_price||0),0); const uPnl=pos.reduce((s,p)=>s+(+p.unrealized_pnl||0),0); const uPnlPct=acc.cached_equity?uPnl/+acc.cached_equity:0; return {...acc, _positions:pos, _posVal:posVal, _uPnl:uPnl, _uPnlPct:uPnlPct}; } catch(e) { return {...acc, _positions:[], _posVal:0, _uPnl:0, _uPnlPct:0}; } }));
+      accounts.value = await Promise.all(data.map(async acc => { try { const pos=await apiFetch(`/api/accounts/${acc.id}/positions`); const posVal=pos.reduce((s,p)=>s+(+p.qty||0)*(+p.mark_price||+p.avg_price||0),0); const uPnl=pos.reduce((s,p)=>s+(+p.unrealized_pnl||0),0); const uPnlPct=acc.cached_equity?uPnl/+acc.cached_equity:0; return {...acc, _positions:pos, _posVal:posVal, _uPnl:uPnl, _uPnlPct:uPnlPct, _equityBase:(+acc.cached_equity||0), _uPnlBase:uPnl}; } catch(e) { return {...acc, _positions:[], _posVal:0, _uPnl:0, _uPnlPct:0, _equityBase:(+acc.cached_equity||0), _uPnlBase:0}; } }));
     } catch(e) { accountsErr.value='加载失败：'+e.message; } finally { accountsLoading.value=false; } }
 
-    async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; try {
+        // ── 账户总览对账：持仓 5 秒、余额/已实现 60 秒（只在总览页跑）──
+    let overviewPosTimer=null, overviewBalTimer=null;
+    async function refreshOverviewPositions() {
+      if (currentMenu.value!=='overview') return;
+      await Promise.all(accounts.value.map(async a => { try { const pos=await apiFetch(`/api/accounts/${a.id}/positions`); a._positions=pos; } catch(e) {} }));
+    }
+    async function refreshOverviewBalances() {
+      if (currentMenu.value!=='overview') return;
+      try { const data=await apiFetch('/api/accounts');
+        for (const d of data) { const a=accounts.value.find(x=>x.id===d.id); if (!a) continue;
+          const base=+d.cached_equity||0;
+          a._equityBase=base; a._uPnlBase=accLivePnl(a);
+          Object.assign(a, {cached_equity:d.cached_equity, cached_available:d.cached_available, updated_at:d.updated_at, realized_pnl:d.realized_pnl});
+        }
+      } catch(e) {}
+    }
+    function startOverviewTimers() { stopOverviewTimers();
+      overviewPosTimer=setInterval(refreshOverviewPositions, 5000);
+      overviewBalTimer=setInterval(refreshOverviewBalances, 60000); }
+    function stopOverviewTimers() { if (overviewPosTimer){clearInterval(overviewPosTimer); overviewPosTimer=null;} if (overviewBalTimer){clearInterval(overviewBalTimer); overviewBalTimer=null;} }
+
+async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; try {
       const data = await apiFetch('/api/traders'); traders.value = data.map(t => { let pos={}; try { pos=JSON.parse(t.hidden_positions_json||'{}'); } catch(e) {} return {...t, _positions:pos}; });
     } catch(e) { tradersErr.value='加载失败：'+e.message; } finally { tradersLoading.value=false; } }
 
@@ -440,6 +461,14 @@ createApp({
     function traderPnl(t) { const l=traderPositionList(t); if (!l.length || l.some(p=>p.pnl==null)) return null; return l.reduce((s,p)=>s+p.pnl,0); }
     function fSigned(n,dec=2) { if (n==null) return '--'; const v=Number(n); return (v>=0?'+':'')+v.toFixed(dec); }
     function traderPosValue(t) { return traderPositionList(t).reduce((s,p)=>s+p.qty*(p.mark ?? p.avg_price),0); }
+    // ── 账户总览：价格本地实时 + 持仓 5 秒对账 ──
+    function posMark(p) { const live=priceMap.value||{}; const m=live[p.symbol]; return m==null?(p.mark_price==null?null:+p.mark_price):(+m); }
+    function posLivePnl(p) { const m=posMark(p); const avg=+p.avg_price||0; const q=+p.qty||0; if (m==null||!avg||!q) return (+p.unrealized_pnl||0);
+      const dir=(p.position_side==='LONG'?1:-1); return (m-avg)*q*dir; }
+    function accLivePnl(a) { return (a._positions||[]).reduce((s,p)=>s+posLivePnl(p),0); }
+    function accLivePosVal(a) { return (a._positions||[]).reduce((s,p)=>{const m=posMark(p); return s+(+p.qty||0)*(m==null?(+p.avg_price||0):m);},0); }
+    function accLiveEquity(a) { return (+a.cached_equity||0) + (accLivePnl(a) - (+a._uPnlBase||0)); }
+    function accLivePct(a) { const base=+a.cached_equity||0; return base?accLivePnl(a)/base:0; }
     function traderLeverage(t) { const v=traderPosValue(t); const m=+t.margin_balance||0; return m?fNum(v/m,1):'--'; }
     function traderLongPct(t) { const l=traderPositionList(t); const lv=l.filter(p=>p.side==='LONG').reduce((s,p)=>s+p.qty*p.avg_price,0); const sv=l.filter(p=>p.side==='SHORT').reduce((s,p)=>s+p.qty*p.avg_price,0); const t2=lv+sv; return t2?Math.round(lv/t2*100):50; }
 
@@ -533,7 +562,7 @@ createApp({
 
     function switchMenu(id) { currentMenu.value=id; }
     watch(currentMenu, (val) => {
-      if (val==='overview') loadAccounts();
+      if (val==='overview') { loadAccounts(); startOverviewTimers(); } else { stopOverviewTimers(); }
       if (val==='monitor') loadTraders();
       if (val==='positions') { loadAllPositions(); loadCopyOrders(); }
       if (val==='logs') loadLogs();
@@ -551,7 +580,7 @@ createApp({
     onUnmounted(() => { clearInterval(logsTimer); clearTimeout(logDebounceTimer); if (ws) ws.close(); });
 
     return {
-      priceMap, traderPnl, fSigned,
+      priceMap, traderPnl, fSigned, accLivePnl, accLivePosVal, accLiveEquity, accLivePct,
       menus, currentMenu, currentLabel, switchMenu, authed, loginForm, loggingIn, loginErr, doLogin, needSetup, setupConfirm, doSetup,
       systemOnline, liveEnabled, wsConnected, darkTheme, toggleTheme, toggleLiveTrading,
       accounts, accountsLoading, accountsErr, loadAccounts, traders, tradersLoading, tradersErr, loadTraders,

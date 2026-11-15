@@ -240,6 +240,9 @@ def realized_pnl_total(client) -> float:
     return total
 
 
+_ws_push = None
+
+
 def _refresh_equity_cache(account_id: int) -> None:
     """平仓后刷新账户余额缓存（方案 A），避免页面停在"仓位还在时"的旧数值。"""
     client = _clients.get(account_id)
@@ -250,6 +253,9 @@ def _refresh_equity_cache(account_id: int) -> None:
         conn.execute("UPDATE api_accounts SET cached_equity=?, cached_available=?, updated_at=? WHERE id=?",
                      (equity, available, int(time.time()), account_id))
         conn.commit()
+        if _ws_push:                       # 交易后立即推给前端，净值/可用不用等对账
+            _ws_push({"type": "account_update", "id": account_id,
+                      "cached_equity": equity, "cached_available": available})
     except Exception as exc:
         db.insert_log("WARN", "executor", f"刷新账户余额缓存失败 {account_id}: {exc}")
 
@@ -320,8 +326,8 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
 
 
 def start_executor(ccxt_clients: dict, ws_broadcast_fn, config_getter) -> None:
-    global _thread,_clients,_config_getter
-    _clients,_config_getter=ccxt_clients,config_getter
+    global _thread,_clients,_config_getter,_ws_push
+    _clients,_config_getter=ccxt_clients,config_getter; _ws_push=ws_broadcast_fn
     if _thread and _thread.is_alive(): return
     _running.set()
     def consume():
