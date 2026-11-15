@@ -105,7 +105,7 @@
               <div class="grid grid-cols-2 gap-2 text-xs">
                 <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">保证金余额</div><div class="font-semibold">{{fNum(t.margin_balance)}} U</div></div>
                 <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">实际杠杆 <span class="text-ink-300">(持仓÷保证金)</span></div><div class="font-semibold">{{traderLeverage(t)}}x</div></div>
-                <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">持仓总价值 <span class="text-ink-300">(均价估算)</span></div><div class="font-semibold">{{fNum(traderPosValue(t))}} U</div></div>
+                <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">持仓总价值 <span class="text-ink-300">(按标记价)</span></div><div class="font-semibold">{{fNum(traderPosValue(t))}} U</div></div>
                 <div class="bg-ink-50 dark:bg-ink-950 rounded-lg p-2"><div class="text-ink-400 mb-0.5">当前浮盈亏 <span class="text-ink-300">(实时估算)</span></div><div class="font-semibold" :class="traderPnl(t)==null?'':(traderPnl(t)>=0?'pnl-pos':'pnl-neg')">{{traderPnl(t)==null?'--':fSigned(traderPnl(t))}}</div></div>
               </div>
               <div class="space-y-1">
@@ -113,7 +113,7 @@
                     <table class="num-right"><thead><tr><th class="text-left">币种/方向</th><th>总数量</th><th>持仓总价值</th><th>开仓均价</th><th>盈亏</th></tr></thead><tbody>
                       <tr v-for="pos in traderPositionList(t)" :key="pos.symbol+pos.side">
                         <td class="text-left"><span class="font-medium">{{pos.symbol}}</span><span class="badge ml-1" :class="pos.side==='LONG'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{pos.side==='LONG'?'多':'空'}}</span></td>
-                        <td>{{fNum(pos.qty,4)}}</td><td>{{fNum(pos.qty*pos.avg_price)}} U</td><td>{{fNum(pos.avg_price)}}</td>
+                        <td>{{fNum(pos.qty,4)}}</td><td>{{fNum(pos.qty*(pos.mark ?? pos.avg_price))}} U</td><td>{{fNum(pos.avg_price)}}</td>
                         <td :class="pos.pnl==null?'text-ink-300':(pos.pnl>=0?'pnl-pos':'pnl-neg')">{{pos.pnl==null?'--':fSigned(pos.pnl)}}</td>
                       </tr>
                     </tbody></table>
@@ -439,7 +439,7 @@ createApp({
       return r; }
     function traderPnl(t) { const l=traderPositionList(t); if (!l.length || l.some(p=>p.pnl==null)) return null; return l.reduce((s,p)=>s+p.pnl,0); }
     function fSigned(n,dec=2) { if (n==null) return '--'; const v=Number(n); return (v>=0?'+':'')+v.toFixed(dec); }
-    function traderPosValue(t) { return traderPositionList(t).reduce((s,p)=>s+p.qty*p.avg_price,0); }
+    function traderPosValue(t) { return traderPositionList(t).reduce((s,p)=>s+p.qty*(p.mark ?? p.avg_price),0); }
     function traderLeverage(t) { const v=traderPosValue(t); const m=+t.margin_balance||0; return m?fNum(v/m,1):'--'; }
     function traderLongPct(t) { const l=traderPositionList(t); const lv=l.filter(p=>p.side==='LONG').reduce((s,p)=>s+p.qty*p.avg_price,0); const sv=l.filter(p=>p.side==='SHORT').reduce((s,p)=>s+p.qty*p.avg_price,0); const t2=lv+sv; return t2?Math.round(lv/t2*100):50; }
 
