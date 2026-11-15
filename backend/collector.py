@@ -23,7 +23,7 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
-MAX_BACKFILL, HOT_PAGE_SIZE, BACKFILL_PAGE_SIZE, FILL_PAGE_SIZE = 150, 10, 50, 20
+MAX_BACKFILL, HOT_PAGE_SIZE, BACKFILL_PAGE_SIZE, FILL_PAGE_SIZE = 150, 10, 200, 200
 OBSERVE_INTERVAL_SEC = 15
 ERROR_PROBE_INTERVAL_SEC = 15   # 铁律 9：置 ERROR 后不停采，低频探测，成功自动恢复
 MARGIN_REFRESH_SEC = 60         # P1-6：后台定时刷新交易员保证金，下单只读库里的缓存值
