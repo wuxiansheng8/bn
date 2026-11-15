@@ -501,14 +501,14 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
     }
     async function savePhoneAlert(row) {
       try {
-        const r = await apiFetch(`/api/settings/phone-alerts/${row.id}`, {method:'PUT', body:{url:row._url}});
+        const r = await apiFetch(`/api/settings/phone-alerts/${row.id}`, {method:'PUT', body:JSON.stringify({url:row._url})});
         row._ok = true; row._msg = r.has_key ? '已保存' : '已清空';
         await loadPhoneAlerts();
       } catch(e) { row._ok = false; row._msg = '保存失败：' + e.message; }
     }
     async function clearPhoneAlert(row) {
       row._url = '';
-      try { await apiFetch(`/api/settings/phone-alerts/${row.id}`, {method:'PUT', body:{url:''}}); await loadPhoneAlerts(); }
+      try { await apiFetch(`/api/settings/phone-alerts/${row.id}`, {method:'PUT', body:JSON.stringify({url:''})}); await loadPhoneAlerts(); }
       catch(e) { row._ok = false; row._msg = '清空失败：' + e.message; }
     }
     async function testPhoneAlert(row) {
