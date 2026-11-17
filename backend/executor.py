@@ -129,6 +129,9 @@ def _override(conn, aid, pid, symbol, side, **fields):
     conn.commit()
 
 
+MARGIN_GATE_RATIO = 0.97   # 单账户保证金使用率上限（2026-11-18 用户定为 97%，原 90%）
+
+
 def check_margin_gate(account_id: int, estimated_margin: float, conn) -> bool:
     row=conn.execute("SELECT cached_equity FROM api_accounts WHERE id=?",(account_id,)).fetchone(); equity=float(row["cached_equity"] or 0) if row else 0
     client=_clients.get(account_id); used=0.0
@@ -138,7 +141,7 @@ def check_margin_gate(account_id: int, estimated_margin: float, conn) -> bool:
                 info=p.get("info",{}); initial=float(info.get("initialMargin") or 0)
                 used += initial or abs(float(p.get("contracts") or 0))*float(p.get("markPrice") or p.get("entryPrice") or 0)/max(float(p.get("leverage") or 1),1)
         except Exception as exc: db.insert_log("ERROR","executor",f"账户 {account_id} 查询保证金失败: {exc}"); return False
-    return equity > 0 and used + estimated_margin <= equity * .9
+    return equity > 0 and used + estimated_margin <= equity * MARGIN_GATE_RATIO
 
 
 def _find_position(client, symbol, position_side):
@@ -300,7 +303,7 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
                         leverage=_apply_leverage(client,symbol,leverage)
                     estimated=qty*price/max(leverage,1)
                     if not check_margin_gate(aid,estimated,conn):
-                        why="保证金总闸门拒绝：超过账户净值 90%"; db.insert_log("WARN","executor",f"账户 {aid} {why}"); notifier.notify("trade_fail",why); _insert_copy(account,signal,"OPEN",qty,0,"FAILED",why); continue
+                        why=f"保证金总闸门拒绝：超过账户净值 {MARGIN_GATE_RATIO:.0%}"; db.insert_log("WARN","executor",f"账户 {aid} {why}"); notifier.notify("trade_fail",why); _insert_copy(account,signal,"OPEN",qty,0,"FAILED",why); continue
                     if not live:
                         db.insert_log("INFO","executor",f"[模拟] 开仓账户 {aid} {symbol} qty={qty}"); _insert_copy(account,signal,"OPEN",qty,price,"SKIPPED","SIMULATED"); continue
                     side="buy" if signal["position_side"]=="LONG" else "sell"
