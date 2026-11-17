@@ -23,7 +23,7 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
-MAX_BACKFILL, HOT_PAGE_SIZE, BACKFILL_PAGE_SIZE, FILL_PAGE_SIZE = 150, 10, 200, 200
+MAX_BACKFILL, HOT_PAGE_SIZE, BACKFILL_PAGE_SIZE, FILL_PAGE_SIZE = 200, 10, 200, 200
 OBSERVE_INTERVAL_SEC = 15
 ERROR_PROBE_INTERVAL_SEC = 15   # 铁律 9：置 ERROR 后不停采，低频探测，成功自动恢复
 MARGIN_REFRESH_SEC = 60         # P1-6：后台定时刷新交易员保证金，下单只读库里的缓存值
@@ -624,7 +624,7 @@ def bootstrap_trader(pid: str) -> dict | None:
 
 
 def start_collector() -> None:
-    """同步建最多 150 条底账并恢复去重，再启动热通道定时器。"""
+    """同步建最多 200 条底账并恢复去重，再启动热通道定时器。"""
     global _executor, _scheduler
     if _pool is None:
         raise RuntimeError("init_collector 必须先调用")
