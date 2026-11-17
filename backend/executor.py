@@ -64,7 +64,8 @@ def init_ccxt_clients(conn) -> dict[int, object]:
 
 def calc_open_qty(trader_qty, trader_margin, my_equity, copy_ratio, mark_price, step_size) -> float:
     if trader_margin <= 0 or step_size <= 0 or min(trader_qty, my_equity, copy_ratio) <= 0: return 0.0
-    raw = trader_qty * (my_equity / trader_margin) * copy_ratio * 0.90
+    # 2026-11-18 用户要求去掉 0.9 保证金缓冲：仓位放大 11.1%，风险率与交易员 1:1
+    raw = trader_qty * (my_equity / trader_margin) * copy_ratio
     return math.floor((raw + 1e-12) / step_size) * step_size
 
 
