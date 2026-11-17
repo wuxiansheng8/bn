@@ -248,8 +248,8 @@
   <div v-if="showTraderModal" class="modal-overlay" @click.self="showTraderModal=false">
     <div class="modal-box"><div class="flex items-center justify-between p-4 border-b border-ink-200 dark:border-ink-800 shrink-0"><h3 class="font-semibold">{{modalTitle}}</h3><button class="btn btn-ghost btn-sm" @click="showTraderModal=false">✕</button></div>
       <div class="flex-1 overflow-auto p-4"><div v-if="modalLoading" class="space-y-2"><div v-for="i in 5" :key="i" class="skeleton h-5 w-full"></div></div><div v-else-if="!modalItems.length" class="text-center text-ink-400 py-8">暂无数据</div>
-      <table v-else class="text-xs num-right"><thead><tr v-if="modalMode==='orders'"><th class="text-left">时间</th><th class="text-left">币种</th><th>方向</th><th>持仓方向</th><th>数量</th><th>均价</th></tr><tr v-else><th class="text-left">币种</th><th>方向</th><th>数量</th><th>开仓时间</th><th>平仓时间</th><th>实现盈亏</th></tr></thead><tbody>
-        <tr v-if="modalMode==='orders'" v-for="o in modalItems" :key="o.orderId||o.orderTime"><td class="text-left font-mono text-ink-400">{{formatTime(o.orderTime)}}</td><td class="text-left font-medium">{{o.symbol}}</td><td><span class="badge" :class="o.side==='BUY'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{o.side}}</span></td><td><span class="badge text-ink-500 bg-ink-100 dark:bg-ink-800">{{o.positionSide}}</span></td><td>{{fNum(o.executedQty,4)}}</td><td>{{fNum(o.avgPrice)}}</td></tr>
+      <table v-else class="text-xs num-right"><thead><tr v-if="modalMode==='orders'"><th class="text-left">成交时间</th><th class="text-left">下单时间</th><th class="text-right">耗时</th><th class="text-left">币种</th><th>方向</th><th>持仓方向</th><th>数量</th><th>均价</th></tr><tr v-else><th class="text-left">币种</th><th>方向</th><th>数量</th><th>开仓时间</th><th>平仓时间</th><th>实现盈亏</th></tr></thead><tbody>
+        <tr v-if="modalMode==='orders'" v-for="o in modalItems" :key="o.orderId||o.orderTime"><td class="text-left font-mono">{{formatTime(orderFillTime(o))}}</td><td class="text-left font-mono text-ink-400">{{formatTime(o.orderTime)}}</td><td class="text-right font-mono" :class="orderGap(o)>5?'text-warn':'text-ink-400'">{{orderGap(o)}}s</td><td class="text-left font-medium">{{o.symbol}}</td><td><span class="badge" :class="o.side==='BUY'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{o.side}}</span></td><td><span class="badge text-ink-500 bg-ink-100 dark:bg-ink-800">{{o.positionSide}}</span></td><td>{{fNum(o.executedQty,4)}}</td><td>{{fNum(o.avgPrice)}}</td></tr>
         <tr v-if="modalMode==='hist'" v-for="p in modalItems" :key="p.symbol+p.positionSide+p.openTime"><td class="text-left font-medium">{{p.symbol}}</td><td><span class="badge" :class="p.positionSide==='LONG'?'bg-ok/10 text-ok':'bg-err/10 text-err'">{{p.positionSide==='LONG'?'多':'空'}}</span></td><td>{{fNum(p.qty,4)}}</td><td class="font-mono text-ink-400 text-xs">{{formatTime(p.openTime)}}</td><td class="font-mono text-ink-400 text-xs">{{formatTime(p.closeTime)}}</td><td :class="p.pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(p.pnl)}}</td></tr>
       </tbody></table></div>
     </div>
@@ -367,6 +367,13 @@ createApp({
     function fNum(n, dec=2) { return n==null?'--':Number(n).toFixed(dec); }
     function fPct(n) { return n==null?'--':(Number(n)*100).toFixed(2)+'%'; }
     function formatTime(ms) { if (!ms) return '--'; const ts = typeof ms==='string'?Date.parse(ms):Number(ms); if (!ts) return '--'; return new Date(ts+8*3600000).toISOString().replace('T',' ').slice(0,19); }
+    // 成交时间优先用 orderUpdateTime（币安网页显示的就是它），没有再退回 orderTime
+    function orderFillTime(o) { return o.orderUpdateTime || o.orderTime; }
+    function orderGap(o) {
+      const a = o.orderUpdateTime || o.orderTime, b = o.orderTime;
+      if (!a || !b) return 0;
+      return Math.max(0, Math.round((a - b) / 1000));
+    }
     function slippage(o) { if (!o.trader_price||!o.my_price||+o.trader_price===0) return 0; return ((+o.my_price-+o.trader_price)/+o.trader_price)*100; }
 
     async function apiFetch(url, opts={}) {
@@ -630,6 +637,7 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
     return {
       priceMap, traderPnl, fSigned, accLivePnl, accLivePosVal, accLiveEquity, accLivePct,
       phoneAlerts, loadPhoneAlerts, savePhoneAlert, clearPhoneAlert, testPhoneAlert,
+      orderFillTime, orderGap,
       menus, currentMenu, currentLabel, switchMenu, authed, loginForm, loggingIn, loginErr, doLogin, needSetup, setupConfirm, doSetup,
       systemOnline, liveEnabled, wsConnected, darkTheme, toggleTheme, toggleLiveTrading,
       accounts, accountsLoading, accountsErr, loadAccounts, traders, tradersLoading, tradersErr, loadTraders,
