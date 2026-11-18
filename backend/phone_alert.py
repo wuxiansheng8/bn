@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover
 PUSH_URL = "https://api.flashcat.cloud/event/push/alert/standard"
 COOLDOWN_SEC = 60
 TIMEOUT_SEC = 8
+# 2026-11-19：Critical 成功后延迟 10 秒自动补发 Ok 关闭该故障。
+# 原因：FlashDuty 分派策略「重复通知」关闭时，同一未关闭故障的后续事件不再通知，
+# 而我们的故障从不关闭（只发 Critical、不发 Ok），导致第一条之后全部静音。
+# 10 秒是为确保语音/短信已真正拨出（窗口太短可能在推送前就关闭）。
+CLOSE_DELAY_SEC = 10.0
 
 _last_sent: dict[tuple[int, str], float] = {}
 _lock = threading.Lock()
@@ -74,6 +79,30 @@ def _record(account_id: int, ok: bool, err: str, now: float) -> None:
         pass
 
 
+def _close_alert(key: str, alert_key: str, title: str) -> None:
+    """补发 Ok 关闭本条故障：让下一条交易提醒能以"新故障"触发通知。"""
+    try:
+        time.sleep(CLOSE_DELAY_SEC)
+        ok, err, _ = _post(key, {
+            "event_status": "Ok",
+            "alert_key": alert_key,
+            "title_rule": title[:512],
+            "description": "单笔交易提醒已自动关闭，无需处理",
+        })
+        if not ok:
+            db.insert_log("WARN", "phone", f"自动关闭告警失败 {alert_key}: {err}")
+    except Exception as exc:  # noqa: BLE001
+        db.insert_log("WARN", "phone", f"自动关闭告警异常 {alert_key}: {exc}")
+
+
+def _spawn_close(key: str, alert_key: str, title: str) -> None:
+    """后台线程关闭，不阻塞交易主流程（send 本身已在执行器线程里同步调用）。"""
+    try:
+        threading.Thread(target=_close_alert, args=(key, alert_key, title), daemon=True).start()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def send(account, kind: str, title: str, description: str, labels: dict | None = None,
          use_cooldown: bool = True) -> dict:
     """推送一条 Critical 事件。account 为 api_accounts 行（含 phone_key）。"""
@@ -88,10 +117,11 @@ def send(account, kind: str, title: str, description: str, labels: dict | None =
                 return {"ok": False, "skipped": "冷却中"}
             _last_sent[(account_id, kind)] = now
 
+    alert_key = f"bn-{account_id}-{kind}-{int(now * 1000)}"
     payload = {
         "event_status": "Critical",
         "title_rule": title[:512],
-        "alert_key": f"bn-{account_id}-{kind}-{int(now * 1000)}",
+        "alert_key": alert_key,
         "description": (description or "")[:2048],
         "labels": {k: str(v) for k, v in (labels or {}).items()},
     }
@@ -99,6 +129,8 @@ def send(account, kind: str, title: str, description: str, labels: dict | None =
     _record(account_id, ok, err, now)
     db.insert_log("INFO" if ok else "WARN", "phone",
                   f"[{account['remark']}] {title} → {'成功' if ok else '失败 ' + err}")
+    if ok:
+        _spawn_close(key, alert_key, title)
     return {"ok": ok, "error": err, "request_id": body.get("request_id", "")}
 
 
