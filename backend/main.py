@@ -593,7 +593,11 @@ async def save_api_account(payload: dict[str,Any], token: str | None=None):
     if any(not payload.get(k) for k in required): raise HTTPException(400,"新增时 remark、api_key、api_secret 必填" if not editing else "remark 必填")
     trader=payload.get("followed_trader_id") or None
     conn=db.get_conn()
-    if trader and conn.execute("SELECT 1 FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 AND id!=?",(trader,payload.get("id",-1))).fetchone(): raise HTTPException(409,"该交易员已绑定其他启用账户")
+    # 2026-11-19 用户要求：允许同一交易员被多个启用账户同时跟随（各账户按自己净值与比例独立算量），
+    # 不再返回 409。铁律 11 限制的是「一个账户绑定多个交易员」，不是「一个交易员只能有一个账户」。
+    if trader:
+        others=conn.execute("SELECT count(*) FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 AND id!=?",(trader,payload.get("id",-1))).fetchone()[0]
+        if others: db.insert_log("INFO","api",f"交易员 {trader} 已有 {others} 个启用账户跟随，本次允许并存（多账户将各自下单）")
     common=(payload["remark"],float(payload.get("copy_ratio",1)),int(payload.get("default_leverage",10)),int(bool(payload.get("is_enabled",True))),trader)
     if editing:
         if bool(payload.get("api_key")) != bool(payload.get("api_secret")):
