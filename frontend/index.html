@@ -188,7 +188,7 @@
               <tr v-for="p in proxies" :key="p.id"><td class="text-left font-mono text-xs">{{p.proxy_url}}</td><td>{{p.exit_ip||'--'}}</td><td>{{p.last_latency_ms? p.last_latency_ms+'ms':'--'}}</td><td><span class="badge" :class="p.status==='OK'?'bg-ok/10 text-ok':p.status==='FAIL'?'bg-err/10 text-err':'bg-ink-100 text-ink-400'">{{p.status}}</span></td><td>{{p.fail_count||0}}</td><td class="text-left text-xs text-err" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="p.error_msg||''">{{p.error_msg||'--'}}</td><td><div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkProxy(p.id)">检测</button><button class="btn btn-ghost btn-sm text-err" @click="deleteProxy(p.id)">删除</button></div></td></tr>
             </tbody></table></div>
             <div v-else class="text-ink-400 text-sm p-2 text-center">暂无代理</div>
-            <div class="text-xs text-ink-400">理论有效频率：{{theoryFreq}} 次/秒（建议代理数 ≥ {{Math.ceil((pollTg.poll_interval_sec||2.5)*2.05)}}，当前可用 {{okProxyCount}}/{{proxies.length}}）</div>
+            <div class="text-xs" :class="proxyHalted?'text-err':'text-ink-400'">{{collectRhythm}}</div>
           </div>
 
           <!-- 模块4：轮询节拍与 TG -->
@@ -361,8 +361,25 @@ createApp({
     const sumUPnl = computed(() => accounts.value.reduce((s,a)=>s+accLivePnl(a),0));
     const sumRealized = computed(() => accounts.value.reduce((s,a)=>s+(+a.realized_pnl||0),0));
     const okProxyCount = computed(() => proxies.value.filter(p => p.status === 'OK').length);
-    const theoryFreq = computed(() => { const n = okProxyCount.value; if (!n) return '0.00'; const beat = pollTg.poll_interval_sec||2.5; return Math.min(n/2.05, 1/beat).toFixed(2); });
-    const pollFreqWarn = computed(() => { const n = okProxyCount.value; if (!n) return '还没有可用代理（状态 OK），系统无法采集'; const beat = pollTg.poll_interval_sec||2.5; return (1/beat) > (n/2.05) ? '节拍比代理额度快，建议增加代理' : ''; });
+    const proxyHalted = computed(() => okProxyCount.value === 0);
+    const beatSec = computed(() => pollTg.poll_interval_sec || 2.5);
+    // 一个 IP 被用掉后要隔几拍才能复用：ceil(2.05 / 节拍)。节拍 2 秒 + 1 个 IP 会隔 2 拍（4 秒一次）
+    const slotTicks = computed(() => Math.max(1, Math.ceil(2.05 / beatSec.value)));
+    const suggestProxy = computed(() => slotTicks.value);
+    // 人话版采集节奏：0 个可用代理 = 采集停止，其余按“每 X 秒一次”表达（2026-11-19 用户反馈 0.00 次/秒看不懂）
+    const collectRhythm = computed(() => {
+      const n = okProxyCount.value, total = proxies.value.length, beat = beatSec.value, k = slotTicks.value;
+      if (!n) return `⚠️ 采集已停止：当前没有可用代理（0/${total}），请先点「检测」`;
+      const rate = Math.min(1 / beat, n / (k * beat));
+      const limited = n < k;
+      return `采集节奏：约每 ${(1 / rate).toFixed(1)} 秒拉取一次 · 可用代理 ${n}/${total}` +
+             (limited ? `（受代理限制，建议 ≥ ${k} 个）` : '（够用）');
+    });
+    const pollFreqWarn = computed(() => {
+      const n = okProxyCount.value;
+      if (!n) return '还没有可用代理，系统不会采集';
+      return n < slotTicks.value ? `代理不足：每 ${slotTicks.value} 拍只能用 ${n} 拍（建议加代理）` : '';
+    });
 
     function fNum(n, dec=2) { return n==null?'--':Number(n).toFixed(dec); }
     function fPct(n) { return n==null?'--':(Number(n)*100).toFixed(2)+'%'; }
@@ -650,7 +667,7 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
       settingsAccounts, settingsAccountsLoading, showAccountModal, editingAccount, accountForm, accountFormErr,
       openAddAccount, openEditAccount, saveAccount, deleteAccount, checkApi, checkingId, showCheckResult, checkResult,
       settingsTraders, addTraderInput, addTraderMsg, addTraderOk, addTrader, addTraderBusy, deleteTrader, resetTrader,
-      proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, theoryFreq, pollFreqWarn, okProxyCount,
+      proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, collectRhythm, proxyHalted, pollFreqWarn, okProxyCount,
       pollTg, savePollTg, testTg, tgTestMsg, tgTestOk,
       showTpSlModal, tpSlTarget, tpSlForm, openTpSl, setTpSl,
       manualCloseHalf, manualCloseAll, manualResume,
