@@ -682,22 +682,35 @@ def _portfolio_id_from(raw: str) -> str:
       https://www.binance.com/zh-CN/copy-trading/lead-details/5075281354358777856?timeRange=7D
       https://www.binance.com/zh-CN/copy-trading/portfolio/<id>
       https://www.binance.com/...?portfolioId=<id>
-    以及纯 portfolioId。兜底取路径里最后一段纯数字。
+    2026-11-19 修正：粘贴来的链接常缺 "http" 前缀（甚至缺首字母），
+    旧实现遇到不含 "http" 就原样返回，导致整段 URL 被当成 portfolioId 入库、
+    后续连删除都 404。现改为：只要不是纯净 ID 就按 URL 解析。
     """
-    if "http" not in raw:
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_-]+", raw):  # 纯 ID：字母数字/下划线/连字符
         return raw
-    parsed = urlparse(raw)
-    query = parse_qs(parsed.query)
-    for key in ("portfolioId", "portfolio_id", "leadPortfolioId"):
-        values = query.get(key)
-        if values and values[0].strip():
-            return values[0].strip()
-    match = re.search(r"/(?:lead-details|leadDetails|portfolio)/([A-Za-z0-9_-]+)", parsed.path)
-    if match:
-        return match.group(1)
-    for segment in reversed([s for s in parsed.path.split("/") if s]):
-        if segment.isdigit():
-            return segment
+    target = raw if "://" in raw else "http://" + raw.lstrip("/")
+    try:
+        parsed = urlparse(target)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        query = parse_qs(parsed.query)
+        for key in ("portfolioId", "portfolio_id", "leadPortfolioId"):
+            values = query.get(key)
+            if values and values[0].strip():
+                return values[0].strip()
+        match = re.search(r"/(?:lead-details|leadDetails|portfolio)/([A-Za-z0-9_-]+)", parsed.path)
+        if match:
+            return match.group(1)
+        for segment in reversed([s for s in parsed.path.split("/") if s]):
+            if segment.isdigit():
+                return segment
+    digits = re.findall(r"\d{10,}", raw)  # 兜底：整段里最后一个长数字
+    if digits:
+        return digits[-1]
     return ""
 
 
@@ -710,6 +723,8 @@ def add_trader(payload: dict[str,Any], token: str | None=None):
     _auth(token); raw=str(payload.get("portfolio_id") or payload.get("url") or "").strip()
     pid=_portfolio_id_from(raw)
     if not pid: raise HTTPException(400,"无法从 URL 解析 portfolioId")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}",pid):
+        raise HTTPException(400,f"portfolioId 格式非法（粘贴的整段链接未能解析）：{pid[:80]}")
     conn=db.get_conn()
     conn.execute("INSERT INTO traders(portfolio_id,nickname,source_url,status) VALUES(?,?,?,'NORMAL') "
                  "ON CONFLICT(portfolio_id) DO UPDATE SET source_url=excluded.source_url, status='NORMAL', error_msg=''",
@@ -725,8 +740,7 @@ def add_trader(payload: dict[str,Any], token: str | None=None):
             "orders":info.get("orders"),"positions":info["positions"]}
 
 
-@app.delete("/api/settings/traders/{pid}")
-@app.delete("/api/settings/traders/{pid}")
+@app.delete("/api/settings/traders/{pid:path}")
 async def remove_trader(pid: str, token: str | None=None):
     _auth(token); conn=db.get_conn()
     if conn.execute("SELECT 1 FROM api_accounts WHERE followed_trader_id=?",(pid,)).fetchone(): raise HTTPException(409,"仍有 API 账户绑定该交易员")

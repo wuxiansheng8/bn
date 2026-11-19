@@ -571,7 +571,7 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
       } catch(e) { addTraderOk.value=false; addTraderMsg.value='添加失败：'+e.message; }
       finally { addTraderBusy.value=false; }
     }
-    async function deleteTrader(pid) { if (!confirm('确认移除此交易员？')) return; try { await apiFetch(`/api/settings/traders/${pid}`, {method:'DELETE'}); await loadSettingsTraders(); } catch(e) { alert('移除失败：'+e.message); } }
+    async function deleteTrader(pid) { if (!confirm('确认移除此交易员？')) return; try { await apiFetch(`/api/settings/traders/${encodeURIComponent(pid)}`, {method:'DELETE'}); await loadSettingsTraders(); } catch(e) { alert('移除失败：'+e.message); } }
     async function resetTrader(pid) { try {
       const r=await apiFetch(`/api/settings/traders/${pid}/reset`, {method:'POST'});
       if (r.initialized) alert(`已重置并重建底账：${r.nickname}，保证金 ${fNum(r.margin_balance)} U，推算持仓 ${r.positions} 个（底账 ${r.orders??'--'} 条）`);
