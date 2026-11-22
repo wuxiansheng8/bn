@@ -47,7 +47,10 @@ def init_db() -> None:
             cached_available REAL,
             realized_pnl     REAL DEFAULT 0.0,
             status_msg       TEXT DEFAULT '',
-            updated_at       INTEGER DEFAULT 0
+            updated_at       INTEGER DEFAULT 0,
+            created_at       INTEGER DEFAULT 0,
+            pnl_since_ms     INTEGER DEFAULT 0,
+            net_deposit      REAL DEFAULT 0.0
         )
     """)
 
@@ -110,9 +113,23 @@ def init_db() -> None:
         ("phone_key", "ALTER TABLE api_accounts ADD COLUMN phone_key TEXT DEFAULT ''"),
         ("phone_last_status", "ALTER TABLE api_accounts ADD COLUMN phone_last_status TEXT DEFAULT ''"),
         ("phone_last_at", "ALTER TABLE api_accounts ADD COLUMN phone_last_at INTEGER DEFAULT 0"),
+        # v3.2：盈亏统计口径（created_at=接入日期，pnl_since_ms=统计起点，net_deposit=累计净入金）
+        ("created_at", "ALTER TABLE api_accounts ADD COLUMN created_at INTEGER DEFAULT 0"),
+        ("pnl_since_ms", "ALTER TABLE api_accounts ADD COLUMN pnl_since_ms INTEGER DEFAULT 0"),
+        ("net_deposit", "ALTER TABLE api_accounts ADD COLUMN net_deposit REAL DEFAULT 0.0"),
     ):
         if col not in account_cols:
             cur.execute(ddl)
+
+    # v3.2：老账户回填 created_at —— 用该账户第一笔跟单记录的时间（copy_orders.created_at 是秒）。
+    # 没有跟单记录的账户（如"带单"账户）回填 0 而不是 updated_at：0 表示"全部历史"，
+    # 若用 updated_at 会把统计起点挪到迁移那一刻，导致已实现盈亏被清零。
+    cur.execute("""
+        UPDATE api_accounts SET created_at = COALESCE(
+            (SELECT MIN(c.created_at) * 1000 FROM copy_orders c WHERE c.api_account_id = api_accounts.id),
+            0)
+        WHERE created_at IS NULL OR created_at = 0
+    """)
 
     # 5. 手动接管表
     cur.execute("""

@@ -6,6 +6,7 @@ import math
 import queue
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -229,33 +230,66 @@ def _cancel_conditional_orders(client, symbol: str, position_side: str) -> int:
 
 
 PNL_INCOME_TYPES = ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")
+# 净入金相关类型（只用于展示"累计充提"，绝不参与盈亏计算）
+DEPOSIT_INCOME_TYPES = ("TRANSFER", "ASSET_TRANSFER")
 
 
 def realized_pnl_total(client) -> float:
-    """累计**净**已实现盈亏 = 已实现盈亏 + 手续费 + 资金费（三者都取币安 income 的原始符号，费用为负）。
+    """兼容旧调用：只取净已实现盈亏。"""
+    return income_summary(client)["pnl"]
+
+
+def income_summary(client, since_ms: int = 0) -> dict:
+    """汇总「净已实现盈亏」与「净入金」，供页面显示。
 
     2026-11-15：realized_pnl 此前只读不写，页面上永远是 0。
     只算 REALIZED_PNL 会低估成本（永续合约的手续费与资金费都是真实支出），
     因此把 COMMISSION / FUNDING_FEE 一并计入，得到"跟币安 App 对得上"的净额。
-    走 GET /fapi/v1/income（权重 30）一次拉全部类型再按类型过滤，由调用方节流。
+
+    2026-11-22（v3.2 修正）：币安 GET /fapi/v1/income 在**不传 startTime 时只返回最近 7 天**（官方文档），
+    旧实现没传 → 页面上的"已实现"其实是滚动 7 天窗口：
+    实测琦账户显示 -251.43，而全量真实值是 -182.06（差价为窗口外那段的 +69.37）。
+    现固定传 startTime（默认 2019-01-01 即"全部历史"），边界只在业务层过滤；
+    若返回正好 1000 条（上限）则再补一页，避免截断。
+    净入金只统计 TRANSFER 类（充提），与盈亏严格分开。
     """
-    params = {"asset": "USDT", "limit": 1000}
+    start = int(since_ms) if since_ms else int(datetime(2019, 1, 1).timestamp() * 1000)
     getter = getattr(client, "fapiPrivateGetIncome", None)
-    rows = getter(params) if callable(getter) else client.fetch2("income", "fapiPrivate", "GET", params)
-    total = 0.0
-    for row in rows or []:
-        if str(row.get("incomeType") or "") not in PNL_INCOME_TYPES:
+    if not callable(getter):
+        def getter(params):  # type: ignore[misc]
+            return client.fetch2("income", "fapiPrivate", "GET", params)
+    rows = list(getter({"asset": "USDT", "limit": 1000, "startTime": start}) or [])
+    if len(rows) >= 1000:                      # 可能被截断：补一页
+        try:
+            last = int(rows[-1].get("time") or 0)
+            if last:
+                rows.extend(getter({"asset": "USDT", "limit": 1000, "startTime": last + 1}) or [])
+        except Exception:
+            pass
+    pnl = 0.0
+    deposit = 0.0
+    for row in rows:
+        try:
+            amount = float(row.get("income") or 0)
+        except (TypeError, ValueError, AttributeError):
             continue
-        try: total += float(row.get("income") or 0)
-        except (TypeError, ValueError, AttributeError): continue
-    return total
+        kind = str(row.get("incomeType") or "")
+        if kind in PNL_INCOME_TYPES:
+            pnl += amount
+        elif kind in DEPOSIT_INCOME_TYPES:
+            deposit += amount
+    return {"pnl": pnl, "net_deposit": deposit}
 
 
 _ws_push = None
 
 
 def _refresh_equity_cache(account_id: int) -> None:
-    """平仓后刷新账户余额缓存（方案 A），避免页面停在"仓位还在时"的旧数值。"""
+    """平仓后刷新账户余额与已实现盈亏缓存（方案 A），避免页面停在旧数值。
+
+    v3.2：开/平仓后除了余额，也把「净已实现盈亏 + 净入金」重算一次并推给前端，
+    否则已实现要等 60 秒节流才更新（用户 2026-11-22 反馈"刚平仓没变化"）。
+    """
     client = _clients.get(account_id)
     if not client: return
     try:
@@ -264,9 +298,22 @@ def _refresh_equity_cache(account_id: int) -> None:
         conn.execute("UPDATE api_accounts SET cached_equity=?, cached_available=?, updated_at=? WHERE id=?",
                      (equity, available, int(time.time()), account_id))
         conn.commit()
-        if _ws_push:                       # 交易后立即推给前端，净值/可用不用等对账
-            _ws_push({"type": "account_update", "id": account_id,
-                      "cached_equity": equity, "cached_available": available})
+        payload = {"type": "account_update", "id": account_id,
+                   "cached_equity": equity, "cached_available": available}
+        try:
+            row = conn.execute("SELECT pnl_since_ms, created_at FROM api_accounts WHERE id=?", (account_id,)).fetchone()
+            since = 0
+            if row:
+                since = int(row["pnl_since_ms"] or 0) or int(row["created_at"] or 0)
+            summary = income_summary(client, since)
+            conn.execute("UPDATE api_accounts SET realized_pnl=?, net_deposit=? WHERE id=?",
+                         (summary["pnl"], summary["net_deposit"], account_id))
+            conn.commit()
+            payload.update({"realized_pnl": summary["pnl"], "net_deposit": summary["net_deposit"]})
+        except Exception as exc:
+            db.insert_log("WARN", "executor", f"刷新已实现盈亏失败 {account_id}: {exc}")
+        if _ws_push:                       # 交易后立即推给前端，净值/可用/已实现不用等对账
+            _ws_push(payload)
     except Exception as exc:
         db.insert_log("WARN", "executor", f"刷新账户余额缓存失败 {account_id}: {exc}")
 

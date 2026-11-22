@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>币安极速多IP监控与自动跟单系统 v3.1</title>
+  <title>币安极速多IP监控与自动跟单系统 v3.2</title>
   <script src="/static/vue.global.prod.js"></script>
   <link rel="stylesheet" href="/static/app.css" />
 </head>
@@ -14,7 +14,7 @@
   <aside class="w-56 shrink-0 border-r border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 flex flex-col">
     <div class="px-4 py-4 flex items-center gap-2 border-b border-ink-200 dark:border-ink-800">
       <div class="w-8 h-8 rounded-lg bg-acc-500 text-white flex items-center justify-center font-bold text-sm">B</div>
-      <div><div class="text-sm font-semibold">跟单系统</div><div class="text-xs text-ink-400">v3.1</div></div>
+      <div><div class="text-sm font-semibold">跟单系统</div><div class="text-xs text-ink-400">v3.2</div></div>
     </div>
     <nav class="flex-1 p-2 space-y-0.5">
       <div v-for="m in menus" :key="m.id" :class="['nav-item', currentMenu===m.id?'nav-active':'']" @click="switchMenu(m.id)" role="button" tabindex="0" @keyup.enter="switchMenu(m.id)">
@@ -86,6 +86,9 @@
                 <div><span class="text-ink-400">未实现盈亏</span> <span class="font-medium" :class="accLivePnl(acc)>=0?'pnl-pos':'pnl-neg'">{{fNum(accLivePnl(acc))}} U ({{fPct(accLivePct(acc))}})</span></div>
                 <div><span class="text-ink-400">已实现盈亏</span> <span class="font-medium" :class="acc.realized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc.realized_pnl)}} U</span></div>
               </div>
+              <div class="text-xs text-ink-400 mt-1">净入金 <span class="font-medium text-ink-500">{{fNum(acc.net_deposit)}} U</span>
+                <span class="ml-3">真实盈亏 <span class="font-medium" :class="((+acc.cached_equity||0)-(+acc.net_deposit||0))>=0?'pnl-pos':'pnl-neg'">{{fNum((+acc.cached_equity||0)-(+acc.net_deposit||0))}} U</span></span>
+                <span class="ml-2">（{{realizedWindowText(acc)}}）</span></div>
               <div v-if="acc.status_msg" class="text-xs text-err">{{acc.status_msg}}</div>
             </div>
           </div>
@@ -275,6 +278,7 @@
       <div><label class="block text-xs text-ink-400 mb-1">API Secret *</label><input v-model="accountForm.api_secret" class="input font-mono text-xs" :placeholder="editingAccount?'留空不改':'必填'" /></div>
       <div><label class="block text-xs text-ink-400 mb-1">跟随交易员（1对1单选）</label><select v-model="accountForm.followed_trader_id" class="select w-full"><option value="">不跟随（仅观察）</option><option v-for="t in settingsTraders" :key="t.portfolio_id" :value="t.portfolio_id">{{t.nickname}} ({{t.portfolio_id}})</option></select></div>
       <div class="grid grid-cols-2 gap-2"><div><label class="block text-xs text-ink-400 mb-1">跟单比例</label><input v-model.number="accountForm.copy_ratio" type="number" step="0.01" min="0.01" class="input" /></div><div><label class="block text-xs text-ink-400 mb-1">默认杠杆</label><input v-model.number="accountForm.default_leverage" type="number" min="1" max="125" class="input" /></div></div>
+      <div class="grid grid-cols-2 gap-2"><div><label class="block text-xs text-ink-400 mb-1">盈亏统计起点</label><input v-model="accountForm.pnl_since_date" type="date" class="input" /></div><div class="text-[11px] text-ink-400 self-end pb-2">留空 = 从接入系统那天算起</div></div>
       <div class="flex items-center gap-2"><label class="text-sm">启用</label><input type="checkbox" v-model="accountForm.is_enabled" /></div>
       <div v-if="accountFormErr" class="text-err text-xs">{{accountFormErr}}</div>
       <div class="flex gap-2 justify-end"><button class="btn btn-ghost" @click="showAccountModal=false">取消</button><button class="btn btn-primary" @click="saveAccount()" :disabled="actionLoading">{{actionLoading?'保存中…':'保存'}}</button></div>
@@ -336,7 +340,7 @@ createApp({
     const settingsAccounts = ref([]); const settingsAccountsLoading = ref(false);
     const settingsTraders = ref([]);
     const showAccountModal = ref(false); const editingAccount = ref(null);
-    const accountForm = reactive({ remark:'', api_key:'', api_secret:'', copy_ratio:1.0, default_leverage:10, is_enabled:true, followed_trader_id:'' });
+    const accountForm = reactive({ remark:'', api_key:'', api_secret:'', copy_ratio:1.0, default_leverage:10, is_enabled:true, followed_trader_id:'', pnl_since_date:'' });
     const accountFormErr = ref(''); const checkingId = ref(0);
     const showCheckResult = ref(false); const checkResult = ref({});
     const addTraderInput = ref(''); const addTraderMsg = ref(''); const addTraderOk = ref(false); const addTraderBusy = ref(false);
@@ -383,6 +387,7 @@ createApp({
 
     function fNum(n, dec=2) { return n==null?'--':Number(n).toFixed(dec); }
     function fPct(n) { return n==null?'--':(Number(n)*100).toFixed(2)+'%'; }
+    function realizedWindowText(acc) { const ms = Number(acc.pnl_since_ms||0) || Number(acc.created_at||0); if (!ms) return '全部'; return '自 ' + new Date(ms + 8*3600e3).toISOString().slice(0,10); }
     function formatTime(ms) { if (!ms) return '--'; const ts = typeof ms==='string'?Date.parse(ms):Number(ms); if (!ts) return '--'; return new Date(ts+8*3600000).toISOString().replace('T',' ').slice(0,19); }
     // 成交时间优先用 orderUpdateTime（币安网页显示的就是它），没有再退回 orderTime
     function orderFillTime(o) { return o.orderUpdateTime || o.orderTime; }
@@ -546,13 +551,13 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
     }
 
     async function loadSettingsAccounts() { settingsAccountsLoading.value=true; try { settingsAccounts.value=await apiFetch('/api/settings/api-accounts'); } catch(e) {} finally { settingsAccountsLoading.value=false; } }
-    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:''}); accountFormErr.value=''; showAccountModal.value=true; }
-    function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||''}); accountFormErr.value=''; showAccountModal.value=true; }
+    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:'',pnl_since_date:''}); accountFormErr.value=''; showAccountModal.value=true; }
+    function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||'',pnl_since_date:(acc.pnl_since_ms?new Date(acc.pnl_since_ms+8*3600e3).toISOString().slice(0,10):'')}); accountFormErr.value=''; showAccountModal.value=true; }
     async function saveAccount() {
       accountFormErr.value=''; if (!accountForm.remark.trim()) { accountFormErr.value='备注名必填'; return; }
       if (!editingAccount.value && (!accountForm.api_key.trim()||!accountForm.api_secret.trim())) { accountFormErr.value='新增时 API Key 和 Secret 必填'; return; }
       actionLoading.value=true; try {
-        const body={...accountForm}; if (editingAccount.value) body.id=editingAccount.value.id; if (!body.api_key) delete body.api_key; if (!body.api_secret) delete body.api_secret;
+        const body={...accountForm}; body.pnl_since_ms=accountForm.pnl_since_date||''; delete body.pnl_since_date; if (editingAccount.value) body.id=editingAccount.value.id; if (!body.api_key) delete body.api_key; if (!body.api_secret) delete body.api_secret;
         await apiFetch('/api/settings/api-accounts', { method:'POST', body:JSON.stringify(body) });
         showAccountModal.value=false; await loadSettingsAccounts();
       } catch(e) { accountFormErr.value='保存失败：'+e.message; } finally { actionLoading.value=false; }
@@ -667,7 +672,7 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
       settingsAccounts, settingsAccountsLoading, showAccountModal, editingAccount, accountForm, accountFormErr,
       openAddAccount, openEditAccount, saveAccount, deleteAccount, checkApi, checkingId, showCheckResult, checkResult,
       settingsTraders, addTraderInput, addTraderMsg, addTraderOk, addTrader, addTraderBusy, deleteTrader, resetTrader,
-      proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, collectRhythm, proxyHalted, pollFreqWarn, okProxyCount,
+      realizedWindowText, proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, collectRhythm, proxyHalted, pollFreqWarn, okProxyCount,
       pollTg, savePollTg, testTg, tgTestMsg, tgTestOk,
       showTpSlModal, tpSlTarget, tpSlForm, openTpSl, setTpSl,
       manualCloseHalf, manualCloseAll, manualResume,

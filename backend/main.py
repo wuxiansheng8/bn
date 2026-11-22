@@ -342,6 +342,9 @@ def _account_json(row) -> dict:
             "cached_equity": row["cached_equity"], "cached_available": row["cached_available"],
               "updated_at": row["updated_at"],
             "realized_pnl": row["realized_pnl"] or 0.0,
+            "net_deposit": (row["net_deposit"] or 0.0) if "net_deposit" in row.keys() else 0.0,
+            "created_at": (row["created_at"] or 0) if "created_at" in row.keys() else 0,
+            "pnl_since_ms": (row["pnl_since_ms"] or 0) if "pnl_since_ms" in row.keys() else 0,
             "status_msg": row["status_msg"]}
 
 
@@ -423,13 +426,15 @@ async def m5_shutdown() -> None:
 
 _balance_refreshed_at: dict[int, float] = {}
 _pnl_refreshed_at: dict[int, float] = {}
+PNL_REFRESH_SEC = 60.0     # 已实现盈亏/净入金：只在平仓时变，10 秒级没意义（v3.2 由 5 秒改为 60 秒）
 
 
 def _refresh_balances(conn, rows, min_interval: float = 5.0) -> None:
-    """打开账户总览时向币安拉一次真实余额与累计已实现盈亏（方案 B），5 秒内不重复拉。
+    """打开账户总览时向币安拉一次真实余额与累计已实现盈亏（方案 B）。
 
     必须是同步函数，由 FastAPI 丢进线程池执行（铁律 3：禁止在事件循环里调同步 requests）。
-    已实现盈亏走 income 接口（权重 30），同样 10 秒节流。
+    - 余额：`min_interval`（5 秒）节流；
+    - 已实现盈亏 / 净入金：`PNL_REFRESH_SEC`（60 秒）节流，另外开/平仓后由 executor 立即刷新并 WS 推送。
     """
     now = time.time()
     changed = False
@@ -449,10 +454,14 @@ def _refresh_balances(conn, rows, min_interval: float = 5.0) -> None:
                 changed = True
             except Exception as exc:
                 db.insert_log("WARN", "api", f"刷新账户余额失败 {aid}: {exc}")
-        if now - _pnl_refreshed_at.get(aid, 0) >= min_interval:
+        if now - _pnl_refreshed_at.get(aid, 0) >= PNL_REFRESH_SEC:
             try:
-                total = executor.realized_pnl_total(client)
-                conn.execute("UPDATE api_accounts SET realized_pnl=? WHERE id=?", (total, aid))
+                since = 0
+                if "pnl_since_ms" in row.keys():
+                    since = int(row["pnl_since_ms"] or 0) or int((row["created_at"] if "created_at" in row.keys() else 0) or 0)
+                summary = executor.income_summary(client, since)
+                conn.execute("UPDATE api_accounts SET realized_pnl=?, net_deposit=? WHERE id=?",
+                             (summary["pnl"], summary["net_deposit"], aid))
                 _pnl_refreshed_at[aid] = now
                 changed = True
             except Exception as exc:
@@ -584,6 +593,24 @@ def position_resume(payload: dict[str,Any], token: str | None=None):
 def settings_accounts(token: str | None=None): return accounts(token)
 
 
+def _parse_since(value) -> int:
+    """解析「盈亏统计起点」：空/0 = 全部历史；支持毫秒时间戳或 YYYY-MM-DD（按北京时间 00:00）。"""
+    if value in (None, "", 0, "0"):
+        return 0
+    if isinstance(value, (int, float)):
+        ms = int(value)
+    else:
+        text = str(value).strip()
+        try:
+            ms = int(datetime.strptime(text[:10], "%Y-%m-%d")
+                     .replace(tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000)
+        except Exception:
+            raise HTTPException(400, "盈亏统计起点格式错误：应为 YYYY-MM-DD 或留空")
+    if ms > int(time.time() * 1000):
+        raise HTTPException(400, "盈亏统计起点不能晚于当前时间")
+    return ms
+
+
 @app.post("/api/settings/api-accounts")
 async def save_api_account(payload: dict[str,Any], token: str | None=None):
     _auth(token)
@@ -599,17 +626,20 @@ async def save_api_account(payload: dict[str,Any], token: str | None=None):
         others=conn.execute("SELECT count(*) FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 AND id!=?",(trader,payload.get("id",-1))).fetchone()[0]
         if others: db.insert_log("INFO","api",f"交易员 {trader} 已有 {others} 个启用账户跟随，本次允许并存（多账户将各自下单）")
     common=(payload["remark"],float(payload.get("copy_ratio",1)),int(payload.get("default_leverage",10)),int(bool(payload.get("is_enabled",True))),trader)
+    # v3.2：盈亏统计起点（0 = 全部历史）。允许传 ms 时间戳或 YYYY-MM-DD 字符串，留空/0 即全部。
+    since_ms = _parse_since(payload.get("pnl_since_ms"))
     if editing:
         if bool(payload.get("api_key")) != bool(payload.get("api_secret")):
             raise HTTPException(400,"修改密钥时 api_key 和 api_secret 必须同时填写")
         account_id=int(payload["id"])
-        conn.execute("UPDATE api_accounts SET remark=?,copy_ratio=?,default_leverage=?,is_enabled=?,followed_trader_id=?,updated_at=? WHERE id=?",(*common,int(time.time()),account_id))
+        conn.execute("UPDATE api_accounts SET remark=?,copy_ratio=?,default_leverage=?,is_enabled=?,followed_trader_id=?,pnl_since_ms=?,updated_at=? WHERE id=?",(*common,since_ms,int(time.time()),account_id))
         if payload.get("api_key") and payload.get("api_secret"):
             conn.execute("UPDATE api_accounts SET api_key_enc=?,api_secret_enc=? WHERE id=?",(encrypt(payload["api_key"]),encrypt(payload["api_secret"]),account_id))
     else:
         values=(common[0],encrypt(payload["api_key"]),encrypt(payload["api_secret"]),*common[1:])
-        cur=conn.execute("INSERT INTO api_accounts(remark,api_key_enc,api_secret_enc,copy_ratio,default_leverage,is_enabled,followed_trader_id,updated_at) VALUES(?,?,?,?,?,?,?,?)",(*values,int(time.time())))
+        cur=conn.execute("INSERT INTO api_accounts(remark,api_key_enc,api_secret_enc,copy_ratio,default_leverage,is_enabled,followed_trader_id,pnl_since_ms,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",(*values,since_ms,int(time.time()*1000),int(time.time())))
         account_id=cur.lastrowid
+    _pnl_refreshed_at.pop(account_id, None)      # 改了统计起点就立即按新口径重算，不等 60 秒
     conn.commit()
     try:
         executor_clients=executor.init_ccxt_clients(conn)
