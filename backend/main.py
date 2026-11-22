@@ -342,7 +342,6 @@ def _account_json(row) -> dict:
             "cached_equity": row["cached_equity"], "cached_available": row["cached_available"],
               "updated_at": row["updated_at"],
             "realized_pnl": row["realized_pnl"] or 0.0,
-            "net_deposit": (row["net_deposit"] or 0.0) if "net_deposit" in row.keys() else 0.0,
             "created_at": (row["created_at"] or 0) if "created_at" in row.keys() else 0,
             "pnl_since_ms": (row["pnl_since_ms"] or 0) if "pnl_since_ms" in row.keys() else 0,
             "status_msg": row["status_msg"]}
@@ -459,9 +458,8 @@ def _refresh_balances(conn, rows, min_interval: float = 5.0) -> None:
                 since = 0
                 if "pnl_since_ms" in row.keys():
                     since = int(row["pnl_since_ms"] or 0) or int((row["created_at"] if "created_at" in row.keys() else 0) or 0)
-                summary = executor.income_summary(client, since)
-                conn.execute("UPDATE api_accounts SET realized_pnl=?, net_deposit=? WHERE id=?",
-                             (summary["pnl"], summary["net_deposit"], aid))
+                total = executor.realized_pnl_total(client, since)
+                conn.execute("UPDATE api_accounts SET realized_pnl=? WHERE id=?", (total, aid))
                 _pnl_refreshed_at[aid] = now
                 changed = True
             except Exception as exc:

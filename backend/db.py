@@ -49,8 +49,7 @@ def init_db() -> None:
             status_msg       TEXT DEFAULT '',
             updated_at       INTEGER DEFAULT 0,
             created_at       INTEGER DEFAULT 0,
-            pnl_since_ms     INTEGER DEFAULT 0,
-            net_deposit      REAL DEFAULT 0.0
+            pnl_since_ms     INTEGER DEFAULT 0
         )
     """)
 
@@ -113,10 +112,9 @@ def init_db() -> None:
         ("phone_key", "ALTER TABLE api_accounts ADD COLUMN phone_key TEXT DEFAULT ''"),
         ("phone_last_status", "ALTER TABLE api_accounts ADD COLUMN phone_last_status TEXT DEFAULT ''"),
         ("phone_last_at", "ALTER TABLE api_accounts ADD COLUMN phone_last_at INTEGER DEFAULT 0"),
-        # v3.2：盈亏统计口径（created_at=接入日期，pnl_since_ms=统计起点，net_deposit=累计净入金）
+        # v3.2：盈亏统计口径（created_at=接入日期，pnl_since_ms=统计起点）
         ("created_at", "ALTER TABLE api_accounts ADD COLUMN created_at INTEGER DEFAULT 0"),
         ("pnl_since_ms", "ALTER TABLE api_accounts ADD COLUMN pnl_since_ms INTEGER DEFAULT 0"),
-        ("net_deposit", "ALTER TABLE api_accounts ADD COLUMN net_deposit REAL DEFAULT 0.0"),
     ):
         if col not in account_cols:
             cur.execute(ddl)

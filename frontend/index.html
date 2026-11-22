@@ -84,11 +84,8 @@
                 <div><span class="text-ink-400">持仓数</span> <span class="font-medium">{{(acc._positions||[]).length}}</span></div>
                 <div><span class="text-ink-400">持仓价值</span> <span class="font-medium">{{fNum(accLivePosVal(acc))}} U</span></div>
                 <div><span class="text-ink-400">未实现盈亏</span> <span class="font-medium" :class="accLivePnl(acc)>=0?'pnl-pos':'pnl-neg'">{{fNum(accLivePnl(acc))}} U ({{fPct(accLivePct(acc))}})</span></div>
-                <div><span class="text-ink-400">已实现盈亏</span> <span class="font-medium" :class="acc.realized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc.realized_pnl)}} U</span></div>
+                <div><span class="text-ink-400">已实现盈亏</span> <span class="font-medium" :class="acc.realized_pnl>=0?'pnl-pos':'pnl-neg'">{{fNum(acc.realized_pnl)}} U</span><span class="text-ink-400 ml-1">（{{realizedWindowText(acc)}}）</span></div>
               </div>
-              <div class="text-xs text-ink-400 mt-1">净入金 <span class="font-medium text-ink-500">{{fNum(acc.net_deposit)}} U</span>
-                <span class="ml-3">真实盈亏 <span class="font-medium" :class="((+acc.cached_equity||0)-(+acc.net_deposit||0))>=0?'pnl-pos':'pnl-neg'">{{fNum((+acc.cached_equity||0)-(+acc.net_deposit||0))}} U</span></span>
-                <span class="ml-2">（{{realizedWindowText(acc)}}）</span></div>
               <div v-if="acc.status_msg" class="text-xs text-err">{{acc.status_msg}}</div>
             </div>
           </div>

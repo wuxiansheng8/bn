@@ -230,16 +230,9 @@ def _cancel_conditional_orders(client, symbol: str, position_side: str) -> int:
 
 
 PNL_INCOME_TYPES = ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")
-# 净入金相关类型（只用于展示"累计充提"，绝不参与盈亏计算）
-DEPOSIT_INCOME_TYPES = ("TRANSFER", "ASSET_TRANSFER")
 
 
-def realized_pnl_total(client) -> float:
-    """兼容旧调用：只取净已实现盈亏。"""
-    return income_summary(client)["pnl"]
-
-
-def income_summary(client, since_ms: int = 0) -> dict:
+def realized_pnl_total(client, since_ms: int = 0) -> float:
     """汇总「净已实现盈亏」与「净入金」，供页面显示。
 
     2026-11-15：realized_pnl 此前只读不写，页面上永远是 0。
@@ -266,19 +259,15 @@ def income_summary(client, since_ms: int = 0) -> dict:
                 rows.extend(getter({"asset": "USDT", "limit": 1000, "startTime": last + 1}) or [])
         except Exception:
             pass
-    pnl = 0.0
-    deposit = 0.0
+    total = 0.0
     for row in rows:
+        if str(row.get("incomeType") or "") not in PNL_INCOME_TYPES:
+            continue
         try:
-            amount = float(row.get("income") or 0)
+            total += float(row.get("income") or 0)
         except (TypeError, ValueError, AttributeError):
             continue
-        kind = str(row.get("incomeType") or "")
-        if kind in PNL_INCOME_TYPES:
-            pnl += amount
-        elif kind in DEPOSIT_INCOME_TYPES:
-            deposit += amount
-    return {"pnl": pnl, "net_deposit": deposit}
+    return total
 
 
 _ws_push = None
@@ -305,11 +294,10 @@ def _refresh_equity_cache(account_id: int) -> None:
             since = 0
             if row:
                 since = int(row["pnl_since_ms"] or 0) or int(row["created_at"] or 0)
-            summary = income_summary(client, since)
-            conn.execute("UPDATE api_accounts SET realized_pnl=?, net_deposit=? WHERE id=?",
-                         (summary["pnl"], summary["net_deposit"], account_id))
+            total = realized_pnl_total(client, since)
+            conn.execute("UPDATE api_accounts SET realized_pnl=? WHERE id=?", (total, account_id))
             conn.commit()
-            payload.update({"realized_pnl": summary["pnl"], "net_deposit": summary["net_deposit"]})
+            payload["realized_pnl"] = total
         except Exception as exc:
             db.insert_log("WARN", "executor", f"刷新已实现盈亏失败 {account_id}: {exc}")
         if _ws_push:                       # 交易后立即推给前端，净值/可用/已实现不用等对账
