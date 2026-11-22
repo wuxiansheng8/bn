@@ -230,6 +230,10 @@ def _cancel_conditional_orders(client, symbol: str, position_side: str) -> int:
 
 
 PNL_INCOME_TYPES = ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")
+# 币安 income 接口对"太早的 startTime"会**静默忽略并退回最近 7 天**（2026-11-22 实测：
+# startTime=2019-01-01 → 只回 7 天；startTime=2024-01-01 → 回全部可用历史）。
+# 因此起点不得早于该下限，否则页面又会算成滚动的 7 天窗口。
+PNL_EARLIEST_MS = 1704067200000        # 2024-01-01 00:00:00 UTC
 
 
 def realized_pnl_total(client, since_ms: int = 0) -> float:
@@ -246,7 +250,10 @@ def realized_pnl_total(client, since_ms: int = 0) -> float:
     若返回正好 1000 条（上限）则再补一页，避免截断。
     净入金只统计 TRANSFER 类（充提），与盈亏严格分开。
     """
-    start = int(since_ms) if since_ms else int(datetime(2019, 1, 1).timestamp() * 1000)
+    # 兜底：没传起点时取 90 天前；早于下限的一律钳到下限（否则币安退回 7 天）
+    now_ms = int(time.time() * 1000)
+    start = int(since_ms) if since_ms else now_ms - 90 * 86400 * 1000
+    start = max(start, PNL_EARLIEST_MS)
     getter = getattr(client, "fapiPrivateGetIncome", None)
     if not callable(getter):
         def getter(params):  # type: ignore[misc]

@@ -606,6 +606,8 @@ def _parse_since(value) -> int:
             raise HTTPException(400, "盈亏统计起点格式错误：应为 YYYY-MM-DD 或留空")
     if ms > int(time.time() * 1000):
         raise HTTPException(400, "盈亏统计起点不能晚于当前时间")
+    if ms < executor.PNL_EARLIEST_MS:
+        raise HTTPException(400, "盈亏统计起点不能早于 2024-01-01（币安接口限制，更早会被退回最近 7 天）")
     return ms
 
 
