@@ -119,15 +119,6 @@ def init_db() -> None:
         if col not in account_cols:
             cur.execute(ddl)
 
-    # v3.2：老账户回填 created_at —— 用该账户第一笔跟单记录的时间（copy_orders.created_at 是秒）。
-    # 没有跟单记录的账户（如"带单"账户）回填 0 而不是 updated_at：0 表示"全部历史"，
-    # 若用 updated_at 会把统计起点挪到迁移那一刻，导致已实现盈亏被清零。
-    cur.execute("""
-        UPDATE api_accounts SET created_at = COALESCE(
-            (SELECT MIN(c.created_at) * 1000 FROM copy_orders c WHERE c.api_account_id = api_accounts.id),
-            0)
-        WHERE created_at IS NULL OR created_at = 0
-    """)
 
     # 5. 手动接管表
     cur.execute("""
@@ -193,6 +184,17 @@ def init_db() -> None:
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_logs_created
         ON system_logs (created_at DESC)
+    """)
+
+    # v3.2 回填：老账户 created_at = 该账户第一笔跟单时间（copy_orders.created_at 是秒）。
+    # 必须放在所有建表之后：本句引用 copy_orders，全新安装时它在上面的迁移段之后才被创建，
+    # 放前面会让空库首次 init_db 直接抛 "no such table: copy_orders"（2026-11-23 发现并修复）。
+    # 无跟单记录的账户回填 0（= 全部历史），不能用 updated_at，否则统计起点会被挪到迁移时刻。
+    cur.execute("""
+        UPDATE api_accounts SET created_at = COALESCE(
+            (SELECT MIN(c.created_at) * 1000 FROM copy_orders c WHERE c.api_account_id = api_accounts.id),
+            0)
+        WHERE created_at IS NULL OR created_at = 0
     """)
 
     conn.commit()
