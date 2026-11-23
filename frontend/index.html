@@ -523,11 +523,11 @@ createApp({
         // ── 账户总览对账：持仓 5 秒、余额/已实现 60 秒（只在总览页跑）──
     let overviewPosTimer=null, overviewBalTimer=null;
     async function refreshOverviewPositions() {
-      if (currentMenu.value!=='overview') return;
+      if (currentMenu.value!=='overview' || !canPoll()) return;
       await Promise.all(accounts.value.map(async a => { try { const pos=await apiFetch(`/api/accounts/${a.id}/positions`); a._positions=pos; } catch(e) {} }));
     }
     async function refreshOverviewBalances() {
-      if (currentMenu.value!=='overview') return;
+      if (currentMenu.value!=='overview' || !canPoll()) return;
       try { const data=await apiFetch('/api/accounts');
         for (const d of data) { const a=accounts.value.find(x=>x.id===d.id); if (!a) continue;
           const base=+d.cached_equity||0;
@@ -536,20 +536,39 @@ createApp({
         }
       } catch(e) {}
     }
+    // ── 菜单级自动刷新 ──────────────────────────────────────────────
+    // 原则：只刷当前页；页面隐藏时跳过；有弹窗时跳过（避免打断填写/误触）。
+    let menuTimer = null;
+    function anyModalOpen() {
+      return showAccountModal.value || showTpSlModal.value || showCheckResult.value
+          || showTraderModal.value || showEmergencyConfirm.value;
+    }
+    function canPoll() { return !document.hidden && !anyModalOpen(); }
+    function stopMenuPolling() { if (menuTimer) { clearInterval(menuTimer); menuTimer = null; } }
+    function startMenuPolling() {
+      stopMenuPolling();
+      const m = currentMenu.value;
+      const tick = (fn, ms) => { menuTimer = setInterval(() => { if (canPoll()) fn(); }, ms); };
+      if (m === 'monitor') tick(() => loadTraders(), 10000);                                    // 读 DB
+      else if (m === 'positions') tick(() => { loadAllPositions(true); pollCopyOrders(); }, 15000);  // 打交易所
+      else if (m === 'tg') tick(() => loadTg(), 3000);                                           // 本机接口
+    }
+
     function startOverviewTimers() { stopOverviewTimers();
       overviewPosTimer=setInterval(refreshOverviewPositions, 5000);
       overviewBalTimer=setInterval(refreshOverviewBalances, 60000); }
     function stopOverviewTimers() { if (overviewPosTimer){clearInterval(overviewPosTimer); overviewPosTimer=null;} if (overviewBalTimer){clearInterval(overviewBalTimer); overviewBalTimer=null;} }
 
-async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; try {
+async function loadTraders(silent=false) { if (!silent) tradersLoading.value=true; tradersErr.value=''; try {
       const data = await apiFetch('/api/traders'); traders.value = data.map(t => { let pos={}; try { pos=JSON.parse(t.hidden_positions_json||'{}'); } catch(e) {} return {...t, _positions:pos}; });
-    } catch(e) { tradersErr.value='加载失败：'+e.message; } finally { tradersLoading.value=false; } }
+    } catch(e) { if (!silent) tradersErr.value='加载失败：'+e.message; } finally { if (!silent) tradersLoading.value=false; } }
 
-    async function loadAllPositions() { posLoading.value=true; posErr.value=''; try {
+    async function loadAllPositions(silent=false) { if (!silent) posLoading.value=true; posErr.value=''; try {
       if (!accounts.value.length) await loadAccounts(); const all=[];
       await Promise.all(accounts.value.map(async acc => { try { const pos=await apiFetch(`/api/accounts/${acc.id}/positions`); pos.forEach(p => all.push({...p, _key:`${acc.id}-${p.symbol}-${p.position_side}`, api_remark:acc.remark})); } catch(e) {} }));
       allPositions.value=all;
-    } catch(e) { posErr.value='加载失败：'+e.message; } finally { posLoading.value=false; } }
+    } catch(e) { if (!silent) posErr.value='加载失败：'+e.message; } finally { if (!silent) posLoading.value=false; } }
+    async function pollCopyOrders() { if (copyOrdersOffset.value!==0) return; try { copyOrders.value = await apiFetch('/api/copy-orders?limit=50&offset=0'); } catch(e) {} }
     async function loadCopyOrders() { copyOrdersLoading.value=true; try { const data=await apiFetch(`/api/copy-orders?limit=50&offset=${copyOrdersOffset.value}`); if (copyOrdersOffset.value===0) copyOrders.value=data; else copyOrders.value.push(...data); } catch(e) {} finally { copyOrdersLoading.value=false; } }
     function loadMoreOrders() { copyOrdersOffset.value+=50; loadCopyOrders(); }
 
@@ -758,17 +777,19 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
       if (val==='logs') loadLogs();
       if (val==='tg') { loadTg(); loadSettingsTraders(); }
       if (val==='settings') { loadSettingsAccounts(); loadSettingsTraders(); loadProxies(); loadPollTg(); loadPhoneAlerts(); loadTg(); }
+      startMenuPolling();
     });
 
     onMounted(() => {
       document.documentElement.classList.toggle('dark', darkTheme.value);
       checkSetup();
       if (authed.value) { connectWs(); loadConfig(); loadAccounts(); loadTraders(); loadSettingsTraders();
-        logsTimer=setInterval(() => { if (currentMenu.value==='logs') loadLogs(); }, 30000);
+        logsTimer=setInterval(() => { if (currentMenu.value==='logs' && canPoll()) loadLogs(); }, 30000);
+        if (currentMenu.value==='overview') startOverviewTimers(); else startMenuPolling();
         fetch('/api/health').then(r=>r.json()).then(d=>{systemOnline.value=d.status==='ok';}).catch(()=>{systemOnline.value=false;});
       }
     });
-    onUnmounted(() => { clearInterval(logsTimer); clearTimeout(logDebounceTimer); if (ws) ws.close(); });
+    onUnmounted(() => { stopMenuPolling(); stopOverviewTimers(); clearInterval(logsTimer); clearTimeout(logDebounceTimer); if (ws) ws.close(); });
 
     return {
       priceMap, traderPnl, fSigned, accLivePnl, accLivePosVal, accLiveEquity, accLivePct,
