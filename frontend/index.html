@@ -672,7 +672,8 @@ async function loadTraders(silent=false) { if (!silent) tradersLoading.value=tru
       try { tgRecent.value = await apiFetch('/api/tg/recent'); } catch(e) {}
       try { const r = await apiFetch('/api/tg/secret'); tgSecret.api_id = r.api_id||''; tgSecret.api_hash_set = !!r.api_hash_set; } catch(e) {}
       tgChannels.value.forEach(c => { if (!tgLinkForm[c.channel]) tgLinkForm[c.channel] = { prefix:'', portfolio_id:'' }; });
-      tgQrSrc.value = (tg.value.login_busy && !tg.value.authorized) ? `/api/tg/qr?t=${Date.now()}` : '';
+      // 二维码走 <img>，不会自动带令牌 → 必须把 token 拼进 URL，否则 401（2026-11-24 生产实测）
+      tgQrSrc.value = (tg.value.login_busy && !tg.value.authorized) ? `/api/tg/qr?token=${token.value}&t=${Date.now()}` : '';
       // 扫码期间每 3 秒轮询状态（二维码本身每次请求都会重新渲染）
       if (tg.value.login_busy && !tgQrTimer) { tgQrTimer = setInterval(loadTg, 3000); }
       if ((!tg.value.login_busy || tg.value.authorized) && tgQrTimer) { clearInterval(tgQrTimer); tgQrTimer = null; }
