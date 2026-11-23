@@ -44,3 +44,27 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # v3.3：TG 频道信号采集（独立容器，与 copybot 共用同一个镜像与 data/）
+  #  - 独立进程：TG 断线/崩溃不影响下单主流程
+  #  - 只通过 data/copybot.db 的 signals 表与主程序通信
+  #  - ./tg 挂进容器：改 config.json 后 `docker restart tgcollector` 即生效，无需重建镜像
+  tgcollector:
+    image: binance-copybot:3.1
+    container_name: tgcollector
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - copybot
+    environment:
+      TZ: Asia/Shanghai
+      COPYBOT_DB: /app/data/copybot.db
+    volumes:
+      - ./data:/app/data
+      - ./tg:/app/tg
+    command: ["python", "-m", "tg.collector", "run"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

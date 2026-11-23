@@ -12,3 +12,9 @@ install.sh
 update.sh
 docker-compose.yml
 开发文档.md
+
+# v3.3 TG 采集：登录 session 与 api 凭据绝不进镜像
+tg/session/
+tg/secret.json
+tg/venv/
+tg/__pycache__/

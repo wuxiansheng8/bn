@@ -6,6 +6,7 @@ M1 骨架职责：鉴权、健康检查、静态前端托管、WebSocket 广播�
 """
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -344,7 +345,7 @@ def _account_json(row) -> dict:
             "realized_pnl": row["realized_pnl"] or 0.0,
             "created_at": (row["created_at"] or 0) if "created_at" in row.keys() else 0,
             "pnl_since_ms": (row["pnl_since_ms"] or 0) if "pnl_since_ms" in row.keys() else 0,
-            "signal_source": (row["signal_source"] or "bapi") if "signal_source" in row.keys() else "bapi",
+            "followed_channel": (row["followed_channel"] or "") if "followed_channel" in row.keys() else "",
             "status_msg": row["status_msg"]}
 
 
@@ -627,22 +628,25 @@ async def save_api_account(payload: dict[str,Any], token: str | None=None):
         others=conn.execute("SELECT count(*) FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 AND id!=?",(trader,payload.get("id",-1))).fetchone()[0]
         if others: db.insert_log("INFO","api",f"交易员 {trader} 已有 {others} 个启用账户跟随，本次允许并存（多账户将各自下单）")
     common=(payload["remark"],float(payload.get("copy_ratio",1)),int(payload.get("default_leverage",10)),int(bool(payload.get("is_enabled",True))),trader)
-    # v3.3：信号源二选一（bapi 默认 / tg）。只接受这两个值，防止前端传脏数据导致该账户永远收不到信号。
-    source=str(payload.get("signal_source") or "bapi").strip().lower()
-    if source not in ("bapi", "tg"):
-        raise HTTPException(400,"信号源只能是 bapi 或 tg")
+    # v3.3：跟随目标二选一 —— 交易员（bapi）或 TG 频道。同时给两个直接拒绝，
+    # 否则该账户会同时消费两个源，等于重复下单。
+    channel=str(payload.get("followed_channel") or "").strip() or None
+    if trader and channel:
+        raise HTTPException(400,"跟随交易员与 TG 频道只能选一个")
+    if channel and not conn.execute("SELECT 1 FROM tg_channels WHERE channel=?",(channel,)).fetchone():
+        raise HTTPException(400,f"TG 频道 {channel} 不存在，请先在「TG 频道设置」里添加")
     # v3.2：盈亏统计起点（0 = 全部历史）。允许传 ms 时间戳或 YYYY-MM-DD 字符串，留空/0 即全部。
     since_ms = _parse_since(payload.get("pnl_since_ms"))
     if editing:
         if bool(payload.get("api_key")) != bool(payload.get("api_secret")):
             raise HTTPException(400,"修改密钥时 api_key 和 api_secret 必须同时填写")
         account_id=int(payload["id"])
-        conn.execute("UPDATE api_accounts SET remark=?,copy_ratio=?,default_leverage=?,is_enabled=?,followed_trader_id=?,signal_source=?,pnl_since_ms=?,updated_at=? WHERE id=?",(*common,source,since_ms,int(time.time()),account_id))
+        conn.execute("UPDATE api_accounts SET remark=?,copy_ratio=?,default_leverage=?,is_enabled=?,followed_trader_id=?,followed_channel=?,pnl_since_ms=?,updated_at=? WHERE id=?",(*common,channel,since_ms,int(time.time()),account_id))
         if payload.get("api_key") and payload.get("api_secret"):
             conn.execute("UPDATE api_accounts SET api_key_enc=?,api_secret_enc=? WHERE id=?",(encrypt(payload["api_key"]),encrypt(payload["api_secret"]),account_id))
     else:
         values=(common[0],encrypt(payload["api_key"]),encrypt(payload["api_secret"]),*common[1:])
-        cur=conn.execute("INSERT INTO api_accounts(remark,api_key_enc,api_secret_enc,copy_ratio,default_leverage,is_enabled,followed_trader_id,signal_source,pnl_since_ms,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(*values,source,since_ms,int(time.time()*1000),int(time.time())))
+        cur=conn.execute("INSERT INTO api_accounts(remark,api_key_enc,api_secret_enc,copy_ratio,default_leverage,is_enabled,followed_trader_id,followed_channel,pnl_since_ms,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(*values,channel,since_ms,int(time.time()*1000),int(time.time())))
         account_id=cur.lastrowid
     _pnl_refreshed_at.pop(account_id, None)      # 改了统计起点就立即按新口径重算，不等 60 秒
     conn.commit()
@@ -986,3 +990,186 @@ def emergency_close(token: str | None=None):
 @app.get("/api/system/price-stream-status")
 async def price_stream_status(token: str | None=None):
     _auth(token); return {"connected":bool(price_stream._thread and price_stream._thread.is_alive()),"symbols":len(price_stream._prices)}
+
+
+# ---------------------------------------------------------------------------
+# v3.3 TG 频道（⑥ 菜单）：频道/映射 CRUD 直接读写 DB；状态/登录/体检代理到 tgcollector
+# 管理接口只绑 127.0.0.1:8098（采集容器），浏览器不直连，权限与主程序一致。
+# ---------------------------------------------------------------------------
+TG_ADMIN = os.environ.get("TG_ADMIN_URL") or "http://127.0.0.1:8098"
+TG_SECRET_PATH = BASE_DIR / "tg" / "secret.json"
+
+
+def _tg_admin(method: str, path: str, timeout: float = 10, **kwargs):
+    try:
+        return requests.request(method, f"{TG_ADMIN}{path}", timeout=timeout, **kwargs)
+    except Exception as exc:
+        raise HTTPException(503, f"tgcollector 不可达：{type(exc).__name__}")
+
+
+@app.get("/api/tg/status")
+def tg_status(token: str | None = None):
+    _auth(token)
+    try:
+        r = _tg_admin("GET", "/status", timeout=3)
+        data = r.json()
+        data["online"] = True
+        return data
+    except HTTPException:
+        return {"online": False, "authorized": False, "listening": False, "channels": [],
+                "today_signals": 0, "last_error": "", "login_busy": False, "qr_at": 0}
+
+
+@app.post("/api/tg/login/start")
+def tg_login_start(token: str | None = None):
+    _auth(token)
+    r = _tg_admin("POST", "/login/start")
+    return r.json()
+
+
+@app.get("/api/tg/qr")
+def tg_qr(token: str | None = None):
+    _auth(token)
+    r = _tg_admin("GET", "/login/qr", timeout=5)
+    if r.status_code != 200:
+        raise HTTPException(404, "二维码尚未生成")
+    from fastapi import Response
+    # SVG：采集器侧用标准库生成，不依赖 pillow
+    return Response(content=r.content, media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/tg/check")
+def tg_check(payload: dict[str, Any], token: str | None = None):
+    _auth(token)
+    channel = str((payload or {}).get("channel") or "")
+    r = _tg_admin("POST", f"/check?channel={channel}", timeout=120)
+    try:
+        return r.json()
+    except Exception:
+        raise HTTPException(502, f"体检失败：{r.status_code}")
+
+
+@app.get("/api/tg/secret")
+def tg_secret_get(token: str | None = None):
+    _auth(token)
+    if not TG_SECRET_PATH.exists():
+        return {"api_id": "", "api_hash_set": False}
+    try:
+        data = json.loads(TG_SECRET_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"api_id": "", "api_hash_set": False}
+    return {"api_id": str(data.get("api_id") or ""), "api_hash_set": bool(data.get("api_hash"))}
+
+
+@app.post("/api/tg/secret")
+def tg_secret_save(payload: dict[str, Any], token: str | None = None):
+    _auth(token)
+    api_id = str((payload or {}).get("api_id") or "").strip()
+    api_hash = str((payload or {}).get("api_hash") or "").strip()
+    if not api_id.isdigit():
+        raise HTTPException(400, "api_id 必须是数字")
+    if not api_hash:                      # 留空 = 不修改已有 hash
+        old = {}
+        if TG_SECRET_PATH.exists():
+            try:
+                old = json.loads(TG_SECRET_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                old = {}
+        api_hash = str(old.get("api_hash") or "")
+    if len(api_hash) < 20:
+        raise HTTPException(400, "api_hash 长度不足（首次必须填）")
+    TG_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TG_SECRET_PATH.write_text(json.dumps({"api_id": int(api_id), "api_hash": api_hash}), encoding="utf-8")
+    try:
+        TG_SECRET_PATH.chmod(0o600)
+    except Exception:
+        pass
+    db.insert_log("INFO", "tg", "TG api 凭据已更新（secret.json）")
+    return {"ok": True}
+
+
+@app.get("/api/tg/channels")
+def tg_channels(token: str | None = None):
+    _auth(token)
+    conn = db.get_conn()
+    rows = conn.execute("SELECT channel, remark, enabled FROM tg_channels ORDER BY created_at, channel").fetchall()
+    out = []
+    for r in rows:
+        links = conn.execute(
+            "SELECT id, prefix, portfolio_id, enabled FROM tg_links WHERE channel=? ORDER BY id",
+            (r["channel"],)).fetchall()
+        out.append({"channel": r["channel"], "remark": r["remark"] or "", "enabled": int(r["enabled"]),
+                    "links": [dict(l) for l in links]})
+    return out
+
+
+@app.post("/api/tg/channels")
+def tg_channel_add(payload: dict[str, Any], token: str | None = None):
+    _auth(token)
+    ch = str((payload or {}).get("channel") or "").strip().lstrip("@").lower()
+    if not ch:
+        raise HTTPException(400, "频道名不能为空")
+    # 先让采集器确认频道真实存在：填错 username 当场报错，而不是等日志里出现“加入失败”
+    try:
+        r = _tg_admin("GET", f"/verify?channel={ch}", timeout=20)
+    except HTTPException:
+        raise HTTPException(409, "采集器未在线：请先完成登录，再添加频道")
+    info = r.json()
+    if not info.get("ok"):
+        raise HTTPException(400, info.get("error") or "频道校验失败")
+    conn = db.get_conn()
+    conn.execute("INSERT OR IGNORE INTO tg_channels (channel, remark, enabled, created_at) VALUES (?,?,1,?)",
+                 (ch, str(payload.get("remark") or ""), int(time.time())))
+    conn.commit()
+    db.insert_log("INFO", "tg", f"添加 TG 频道 @{ch}（{info.get('title','')}）")
+    return {"ok": True}
+
+
+@app.delete("/api/tg/channels/{channel}")
+def tg_channel_del(channel: str, token: str | None = None):
+    _auth(token)
+    conn = db.get_conn()
+    conn.execute("DELETE FROM tg_links WHERE channel=?", (channel,))
+    conn.execute("DELETE FROM tg_channels WHERE channel=?", (channel,))
+    conn.commit()
+    db.insert_log("INFO", "tg", f"删除 TG 频道 @{channel}（含映射）")
+    return {"ok": True}
+
+
+@app.post("/api/tg/links")
+def tg_link_save(payload: dict[str, Any], token: str | None = None):
+    _auth(token)
+    ch = str((payload or {}).get("channel") or "").strip()
+    prefix = str(payload.get("prefix") or "").strip()
+    pid = str(payload.get("portfolio_id") or "").strip()
+    if not (ch and prefix and pid):
+        raise HTTPException(400, "频道、前缀、交易员都必须填写")
+    conn = db.get_conn()
+    if not conn.execute("SELECT 1 FROM traders WHERE portfolio_id=?", (pid,)).fetchone():
+        raise HTTPException(400, "该交易员不在监控列表里，请先在「监控交易员」中添加")
+    conn.execute("INSERT INTO tg_links (channel, prefix, portfolio_id, enabled) VALUES (?,?,?,1) "
+                 "ON CONFLICT(channel, prefix) DO UPDATE SET portfolio_id=excluded.portfolio_id, enabled=1",
+                 (ch, prefix, pid))
+    conn.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/tg/links/{link_id}")
+def tg_link_del(link_id: int, token: str | None = None):
+    _auth(token)
+    conn = db.get_conn()
+    conn.execute("DELETE FROM tg_links WHERE id=?", (link_id,))
+    conn.commit()
+    return {"ok": True}
+
+
+@app.get("/api/tg/recent")
+def tg_recent(token: str | None = None):
+    _auth(token)
+    conn = db.get_conn()
+    rows = conn.execute(
+        "SELECT id, source_key, channel, symbol, side, action, qty, price, event_ms, consumed_at "
+        "FROM signals WHERE source='tg' ORDER BY id DESC LIMIT 20").fetchall()
+    return [dict(r) for r in rows]
+

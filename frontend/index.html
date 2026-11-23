@@ -77,7 +77,7 @@
                 <div class="font-semibold text-sm">{{acc.remark}}</div>
                 <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" :class="acc.is_enabled&&!acc.status_msg?'bg-ok':'bg-err'"></span><span class="text-xs text-ink-400">{{acc.is_enabled&&!acc.status_msg?'正常':'异常'}}</span></div>
               </div>
-              <div class="text-xs text-ink-400">跟随：{{traderName(acc.followed_trader_id)}}<span v-if="acc.followed_trader_id" class="ml-2">信号源：<span class="font-medium" :class="acc.signal_source==='tg'?'text-ok':'text-ink-500'">{{acc.signal_source==='tg'?'TG 频道':'币安接口'}}</span></span></div>
+<div class="text-xs text-ink-400">跟随：<template v-if="acc.followed_channel">TG 频道 <span class="font-medium text-ok">@{{acc.followed_channel}}</span></template><template v-else>{{traderName(acc.followed_trader_id)}}</template></div>
               <div class="grid grid-cols-2 gap-2 text-xs">
                 <div><span class="text-ink-400">净值</span> <span class="font-medium">{{fNum(accLiveEquity(acc))}} U</span></div>
                 <div><span class="text-ink-400">可用</span> <span class="font-medium">{{fNum(acc.cached_available)}} U</span><span class="text-ink-400 ml-1">{{acc.updated_at?'('+formatTime(acc.updated_at*1000).slice(11)+')':''}}</span></div>
@@ -175,6 +175,7 @@
             <div v-if="addTraderMsg" class="text-xs" :class="addTraderOk?'text-ok':'text-err'">{{addTraderMsg}}</div>
             <div v-if="settingsTraders.length" class="overflow-x-auto"><table><thead><tr><th class="text-left">昵称</th><th class="text-left">portfolioId</th><th>状态</th><th>绑定账户</th><th>操作</th></tr></thead><tbody>
               <tr v-for="t in settingsTraders" :key="t.portfolio_id"><td class="text-left font-medium">{{t.nickname}}</td><td class="text-left font-mono text-xs">{{t.portfolio_id}}</td><td><span class="badge" :class="t.status==='ACTIVE'?'bg-ok/10 text-ok':t.status==='ERROR'?'bg-err/10 text-err':'bg-ink-100 text-ink-400'">{{t.status}}</span></td><td class="text-xs">{{followingAccounts(t.portfolio_id).map(a=>a.remark).join(', ')||'--'}}</td><td><button class="btn btn-ghost btn-sm" @click="resetTrader(t.portfolio_id)">重置状态</button><button class="btn btn-ghost btn-sm text-err" @click="deleteTrader(t.portfolio_id)">移除</button></td></tr>
+              <tr v-for="c in tgChannels" :key="'ch'+c.channel"><td class="text-left font-medium">TG 频道</td><td class="text-left font-mono text-xs">@{{c.channel}}</td><td><span class="badge" :class="tg.authorized?'bg-ok/10 text-ok':'bg-warn/10 text-warn'">{{tg.authorized?'监听中':'未登录'}}</span></td><td class="text-xs">{{followingChannelAccounts(c.channel).map(a=>a.remark).join(', ')||'--'}}</td><td><button class="btn btn-ghost btn-sm" @click="switchMenu('tg')">设置</button></td></tr>
             </tbody></table></div>
             <div v-else class="text-ink-400 text-sm p-2 text-center">暂无交易员</div>
           </div>
@@ -226,7 +227,70 @@
           </div>
         </div>
 
-        <!-- 菜单5：日志 -->
+        <!-- 菜单5：TG 频道设置 -->
+  <div v-if="currentMenu==='tg'" class="space-y-4">
+    <div class="card p-4 space-y-2">
+      <div class="flex justify-between items-center"><h3 class="font-semibold text-sm">采集器状态</h3><button class="btn btn-ghost btn-sm" @click="loadTg()">刷新</button></div>
+      <div class="text-sm grid sm:grid-cols-2 gap-1">
+        <div>运行：<span :class="tg.online?'text-ok':'text-err'">{{tg.online?'在线':'离线（tgcollector 容器未启动）'}}</span></div>
+        <div>登录：<span :class="tg.authorized?'text-ok':'text-warn'">{{tg.authorized?'已登录':'未登录'}}</span></div>
+        <div>监听：<span :class="tg.listening?'text-ok':'text-ink-400'">{{tg.listening?'监听中':'未监听'}}</span></div>
+        <div>今日解析：<b>{{tg.today_signals||0}}</b> 条</div>
+      </div>
+      <div v-if="tg.last_error" class="text-xs text-err">最近错误：{{tg.last_error}}</div>
+    </div>
+
+    <div class="card p-4 space-y-2">
+      <h3 class="font-semibold text-sm">① api 凭据</h3>
+      <div class="grid sm:grid-cols-2 gap-2">
+        <input v-model="tgSecret.api_id" class="input" placeholder="api_id（数字）" />
+        <input v-model="tgSecret.api_hash" class="input font-mono text-xs" :placeholder="tgSecret.api_hash_set?'已设置（留空不改）':'api_hash'" />
+      </div>
+      <button class="btn btn-primary btn-sm" @click="saveTgSecret()">保存凭据</button>
+    </div>
+
+    <div class="card p-4 space-y-2">
+      <h3 class="font-semibold text-sm">② 登录</h3>
+      <div class="flex items-center gap-3">
+        <button class="btn btn-primary btn-sm" @click="startTgLogin()" :disabled="tg.authorized||tg.login_busy">扫码登录</button>
+        <span class="text-xs text-ink-400">{{tg.authorized?'已登录，无需重复扫码':(tg.login_busy?'等待扫码…':'')}}</span>
+      </div>
+      <img v-if="tgQrSrc && !tg.authorized" :src="tgQrSrc" alt="二维码" style="width:240px;height:240px;background:#fff;padding:8px;border-radius:8px" />
+    </div>
+
+    <div class="card p-4 space-y-3">
+      <h3 class="font-semibold text-sm">③ 频道与交易员映射</h3>
+      <div class="flex gap-2"><input v-model="tgNewChannel" class="input" placeholder="频道 username，如 shipan_jiankong" /><button class="btn btn-primary btn-sm" @click="addTgChannel()" :disabled="!tgNewChannel.trim()">添加频道</button></div>
+      <div v-if="!tgChannels.length" class="text-xs text-ink-400">还没有频道</div>
+      <div v-for="c in tgChannels" :key="c.channel" class="border-t border-ink-100 pt-3 space-y-2">
+        <div class="flex justify-between items-center">
+          <div class="text-sm font-medium">@{{c.channel}}</div>
+          <div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkTgChannel(c.channel)">体检</button><button class="btn btn-ghost btn-sm text-err" @click="delTgChannel(c.channel)">删除</button></div>
+        </div>
+        <div v-for="l in c.links" :key="l.id" class="flex items-center gap-2 text-xs">
+          <span class="font-mono">{{l.prefix}}</span><span>→</span><span>{{traderName(l.portfolio_id)}}</span>
+          <button class="btn btn-ghost btn-sm text-err" @click="delTgLink(l.id)">移除</button>
+        </div>
+        <div class="flex gap-2" v-if="tgLinkForm[c.channel]">
+          <input v-model="tgLinkForm[c.channel].prefix" class="input text-xs" placeholder="消息前缀，如 熬鹰币安实盘" />
+          <select v-model="tgLinkForm[c.channel].portfolio_id" class="select text-xs"><option value="">选择交易员</option><option v-for="t in settingsTraders" :key="t.portfolio_id" :value="t.portfolio_id">{{t.nickname}}</option></select>
+          <button class="btn btn-ghost btn-sm" @click="saveTgLink(c.channel)">绑定</button>
+        </div>
+        <div v-if="tgCheckResult[c.channel]" class="text-xs text-ink-400 whitespace-pre-line">{{tgCheckResult[c.channel]}}</div>
+      </div>
+    </div>
+
+    <div class="card p-4 space-y-2">
+      <h3 class="font-semibold text-sm">④ 最近解析</h3>
+      <div v-if="!tgRecent.length" class="text-xs text-ink-400">暂无</div>
+      <div v-for="r in tgRecent" :key="r.id" class="text-xs font-mono flex gap-3">
+        <span class="text-ink-400">{{fmtMs(r.event_ms)}}</span><span>{{r.action}}</span><span>{{r.symbol}}</span><span>{{r.qty}}</span>
+        <span :class="r.consumed_at?'text-ok':'text-warn'">{{r.consumed_at?'已执行':'待执行'}}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 菜单5：日志 -->
         <div v-if="currentMenu==='logs'" class="space-y-3">
           <div class="card p-3 flex flex-wrap gap-2 items-center">
             <select v-model="logFilter.level" class="select w-32" @change="loadLogs"><option value="">全部级别</option><option value="TRADE">交易与跟单</option><option value="WARN">预警</option><option value="ERROR">错误诊断</option><option value="INFO">INFO</option></select>
@@ -273,8 +337,7 @@
       <div><label class="block text-xs text-ink-400 mb-1">备注名 *</label><input v-model="accountForm.remark" class="input" /></div>
       <div><label class="block text-xs text-ink-400 mb-1">API Key *</label><input v-model="accountForm.api_key" class="input font-mono text-xs" :placeholder="editingAccount?'留空不改':'必填'" /></div>
       <div><label class="block text-xs text-ink-400 mb-1">API Secret *</label><input v-model="accountForm.api_secret" class="input font-mono text-xs" :placeholder="editingAccount?'留空不改':'必填'" /></div>
-      <div><label class="block text-xs text-ink-400 mb-1">信号源（仅跟随交易员时生效）</label><select v-model="accountForm.signal_source" class="select w-full"><option value="bapi">币安接口（慢 ~120 秒，最稳）</option><option value="tg">TG 频道（快 ~100 秒，需 tg-collector 运行）</option></select></div>
-      <div><label class="block text-xs text-ink-400 mb-1">跟随交易员（1对1单选）</label><select v-model="accountForm.followed_trader_id" class="select w-full"><option value="">不跟随（仅观察）</option><option v-for="t in settingsTraders" :key="t.portfolio_id" :value="t.portfolio_id">{{t.nickname}} ({{t.portfolio_id}})</option></select></div>
+      <div><label class="block text-xs text-ink-400 mb-1">跟随目标（交易员走币安接口，TG 频道走采集器）</label><select v-model="accountForm.follow_target" class="select w-full"><option value="">不跟随（仅观察）</option><option v-for="t in settingsTraders" :key="'t'+t.portfolio_id" :value="'trader:'+t.portfolio_id">{{t.nickname}}（币安接口）</option><option v-for="c in tgChannels" :key="'c'+c.channel" :value="'channel:'+c.channel">TG 频道 @{{c.channel}}</option></select></div>
       <div class="grid grid-cols-2 gap-2"><div><label class="block text-xs text-ink-400 mb-1">跟单比例</label><input v-model.number="accountForm.copy_ratio" type="number" step="0.01" min="0.01" class="input" /></div><div><label class="block text-xs text-ink-400 mb-1">默认杠杆</label><input v-model.number="accountForm.default_leverage" type="number" min="1" max="125" class="input" /></div></div>
       <div class="grid grid-cols-2 gap-2"><div><label class="block text-xs text-ink-400 mb-1">盈亏统计起点</label><input v-model="accountForm.pnl_since_date" type="date" class="input" /></div><div class="text-[11px] text-ink-400 self-end pb-2">留空 = 从接入系统那天算起</div></div>
       <div class="flex items-center gap-2"><label class="text-sm">启用</label><input type="checkbox" v-model="accountForm.is_enabled" /></div>
@@ -318,7 +381,9 @@ createApp({
   setup() {
     const menus = [
       { id:'overview', icon:'📊', label:'账户总览' }, { id:'monitor', icon:'📡', label:'交易员监控' },
-      { id:'positions', icon:'📌', label:'仓位与订单' }, { id:'settings', icon:'⚙️', label:'功能设置' }, { id:'logs', icon:'📄', label:'日志' },
+      { id:'positions', icon:'📌', label:'仓位与订单' }, { id:'settings', icon:'⚙️', label:'功能设置' },
+      { id:'tg', icon:'📡', label:'TG 频道设置' },
+      { id:'logs', icon:'📄', label:'日志' },
     ];
     const currentMenu = ref('overview');
     const currentLabel = computed(() => menus.find(m => m.id === currentMenu.value)?.label || '');
@@ -338,7 +403,7 @@ createApp({
     const settingsAccounts = ref([]); const settingsAccountsLoading = ref(false);
     const settingsTraders = ref([]);
     const showAccountModal = ref(false); const editingAccount = ref(null);
-    const accountForm = reactive({ remark:'', api_key:'', api_secret:'', copy_ratio:1.0, default_leverage:10, is_enabled:true, followed_trader_id:'', signal_source:'bapi', pnl_since_date:'' });
+    const accountForm = reactive({ remark:'', api_key:'', api_secret:'', copy_ratio:1.0, default_leverage:10, is_enabled:true, followed_trader_id:'', followed_channel:'', follow_target:'', pnl_since_date:'' });
     const accountFormErr = ref(''); const checkingId = ref(0);
     const showCheckResult = ref(false); const checkResult = ref({});
     const addTraderInput = ref(''); const addTraderMsg = ref(''); const addTraderOk = ref(false); const addTraderBusy = ref(false);
@@ -549,13 +614,15 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
     }
 
     async function loadSettingsAccounts() { settingsAccountsLoading.value=true; try { settingsAccounts.value=await apiFetch('/api/settings/api-accounts'); } catch(e) {} finally { settingsAccountsLoading.value=false; } }
-    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:'',signal_source:'bapi',pnl_since_date:''}); accountFormErr.value=''; showAccountModal.value=true; }
-    function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||'',signal_source:acc.signal_source||'bapi',pnl_since_date:(acc.pnl_since_ms?new Date(acc.pnl_since_ms+8*3600e3).toISOString().slice(0,10):'')}); accountFormErr.value=''; showAccountModal.value=true; }
+    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:'',followed_channel:'',follow_target:'',pnl_since_date:''}); accountFormErr.value=''; showAccountModal.value=true; }
+    function openEditAccount(acc) { editingAccount.value=acc; const target=acc.followed_channel?('channel:'+acc.followed_channel):(acc.followed_trader_id?('trader:'+acc.followed_trader_id):''); Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||'',followed_channel:acc.followed_channel||'',follow_target:target,pnl_since_date:(acc.pnl_since_ms?new Date(acc.pnl_since_ms+8*3600e3).toISOString().slice(0,10):'')}); accountFormErr.value=''; showAccountModal.value=true; }
     async function saveAccount() {
       accountFormErr.value=''; if (!accountForm.remark.trim()) { accountFormErr.value='备注名必填'; return; }
       if (!editingAccount.value && (!accountForm.api_key.trim()||!accountForm.api_secret.trim())) { accountFormErr.value='新增时 API Key 和 Secret 必填'; return; }
       actionLoading.value=true; try {
-        const body={...accountForm}; body.pnl_since_ms=accountForm.pnl_since_date||''; delete body.pnl_since_date; if (editingAccount.value) body.id=editingAccount.value.id; if (!body.api_key) delete body.api_key; if (!body.api_secret) delete body.api_secret;
+        const body={...accountForm};
+        const tgt=accountForm.follow_target||''; body.followed_trader_id=tgt.startsWith('trader:')?tgt.slice(7):''; body.followed_channel=tgt.startsWith('channel:')?tgt.slice(8):''; delete body.follow_target;
+        body.pnl_since_ms=accountForm.pnl_since_date||''; delete body.pnl_since_date; if (editingAccount.value) body.id=editingAccount.value.id; if (!body.api_key) delete body.api_key; if (!body.api_secret) delete body.api_secret;
         await apiFetch('/api/settings/api-accounts', { method:'POST', body:JSON.stringify(body) });
         showAccountModal.value=false; await loadSettingsAccounts();
       } catch(e) { accountFormErr.value='保存失败：'+e.message; } finally { actionLoading.value=false; }
@@ -574,6 +641,53 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
     }
 
     // ── 设置页：交易员 ──
+    // ── TG 频道设置 ──
+    const tg = ref({}); const tgChannels = ref([]); const tgRecent = ref([]);
+    const tgSecret = reactive({ api_id:'', api_hash:'', api_hash_set:false });
+    const tgNewChannel = ref(''); const tgLinkForm = reactive({}); const tgCheckResult = reactive({}); const tgQrSrc = ref(''); let tgQrTimer = null;
+    function fmtMs(ms) { if (!ms) return '--'; const d=new Date(ms+8*3600e3); return d.toISOString().slice(5,16).replace('T',' '); }
+    async function loadTg() {
+      try { tg.value = await apiFetch('/api/tg/status'); } catch(e) { tg.value={online:false}; }
+      try { tgChannels.value = await apiFetch('/api/tg/channels'); } catch(e) {}
+      try { tgRecent.value = await apiFetch('/api/tg/recent'); } catch(e) {}
+      try { const r = await apiFetch('/api/tg/secret'); tgSecret.api_id = r.api_id||''; tgSecret.api_hash_set = !!r.api_hash_set; } catch(e) {}
+      tgChannels.value.forEach(c => { if (!tgLinkForm[c.channel]) tgLinkForm[c.channel] = { prefix:'', portfolio_id:'' }; });
+      tgQrSrc.value = (tg.value.login_busy && !tg.value.authorized) ? `/api/tg/qr?t=${Date.now()}` : '';
+      // 扫码期间每 3 秒轮询状态（二维码本身每次请求都会重新渲染）
+      if (tg.value.login_busy && !tgQrTimer) { tgQrTimer = setInterval(loadTg, 3000); }
+      if ((!tg.value.login_busy || tg.value.authorized) && tgQrTimer) { clearInterval(tgQrTimer); tgQrTimer = null; }
+    }
+    async function saveTgSecret() {
+      try { await apiFetch('/api/tg/secret', { method:'POST', body: JSON.stringify({ api_id: tgSecret.api_id, api_hash: tgSecret.api_hash }) }); tgSecret.api_hash=''; alert('已保存'); await loadTg(); }
+      catch(e) { alert('保存失败：'+e.message); }
+    }
+    async function startTgLogin() {
+      try { await apiFetch('/api/tg/login/start', { method:'POST' }); await loadTg(); } catch(e) { alert('启动登录失败：'+e.message); }
+    }
+    async function addTgChannel() {
+      try { await apiFetch('/api/tg/channels', { method:'POST', body: JSON.stringify({ channel: tgNewChannel.value.trim() }) }); tgNewChannel.value=''; await loadTg(); }
+      catch(e) { alert('添加失败：'+e.message); }
+    }
+    async function delTgChannel(ch) {
+      if (!confirm(`删除频道 @${ch} 及其映射？`)) return;
+      try { await apiFetch(`/api/tg/channels/${ch}`, { method:'DELETE' }); await loadTg(); } catch(e) { alert('删除失败：'+e.message); }
+    }
+    async function saveTgLink(ch) {
+      const f = tgLinkForm[ch]; if (!f.prefix.trim() || !f.portfolio_id) { alert('请填写前缀并选择交易员'); return; }
+      try { await apiFetch('/api/tg/links', { method:'POST', body: JSON.stringify({ channel: ch, prefix: f.prefix.trim(), portfolio_id: f.portfolio_id }) }); f.prefix=''; await loadTg(); }
+      catch(e) { alert('绑定失败：'+e.message); }
+    }
+    async function delTgLink(id) {
+      try { await apiFetch(`/api/tg/links/${id}`, { method:'DELETE' }); await loadTg(); } catch(e) { alert('移除失败：'+e.message); }
+    }
+    async function checkTgChannel(ch) {
+      tgCheckResult[ch] = '体检中…';
+      try { const r = await apiFetch('/api/tg/check', { method:'POST', body: JSON.stringify({ channel: ch }) });
+        tgCheckResult[ch] = r.ok ? (r.report.lines||[]).join('\n') : ('失败：'+(r.error||'')); }
+      catch(e) { tgCheckResult[ch] = '体检失败：'+e.message; }
+    }
+    function followingChannelAccounts(ch) { return settingsAccounts.value.filter(a => a.followed_channel === ch); }
+
     async function loadSettingsTraders() { try { settingsTraders.value=await apiFetch('/api/settings/traders'); } catch(e) {} }
     async function addTrader() {
       if (!addTraderInput.value.trim() || addTraderBusy.value) return;
@@ -641,7 +755,8 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
       if (val==='monitor') loadTraders();
       if (val==='positions') { loadAllPositions(); loadCopyOrders(); }
       if (val==='logs') loadLogs();
-      if (val==='settings') { loadSettingsAccounts(); loadSettingsTraders(); loadProxies(); loadPollTg(); loadPhoneAlerts(); }
+      if (val==='tg') { loadTg(); loadSettingsTraders(); }
+      if (val==='settings') { loadSettingsAccounts(); loadSettingsTraders(); loadProxies(); loadPollTg(); loadPhoneAlerts(); loadTg(); }
     });
 
     onMounted(() => {
@@ -670,7 +785,11 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
       settingsAccounts, settingsAccountsLoading, showAccountModal, editingAccount, accountForm, accountFormErr,
       openAddAccount, openEditAccount, saveAccount, deleteAccount, checkApi, checkingId, showCheckResult, checkResult,
       settingsTraders, addTraderInput, addTraderMsg, addTraderOk, addTrader, addTraderBusy, deleteTrader, resetTrader,
-      realizedWindowText, proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, collectRhythm, proxyHalted, pollFreqWarn, okProxyCount,
+      realizedWindowText,
+      tg, tgChannels, tgRecent, tgSecret, tgNewChannel, tgLinkForm, tgCheckResult, tgQrSrc,
+      loadTg, saveTgSecret, startTgLogin, addTgChannel, delTgChannel, saveTgLink, delTgLink, checkTgChannel,
+      followingChannelAccounts, fmtMs,
+      proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, collectRhythm, proxyHalted, pollFreqWarn, okProxyCount,
       pollTg, savePollTg, testTg, tgTestMsg, tgTestOk,
       showTpSlModal, tpSlTarget, tpSlForm, openTpSl, setTpSl,
       manualCloseHalf, manualCloseAll, manualResume,

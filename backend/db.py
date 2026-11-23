@@ -50,7 +50,7 @@ def init_db() -> None:
             updated_at       INTEGER DEFAULT 0,
             created_at       INTEGER DEFAULT 0,
             pnl_since_ms     INTEGER DEFAULT 0,
-            signal_source    TEXT DEFAULT 'bapi'
+            followed_channel TEXT
         )
     """)
 
@@ -116,8 +116,8 @@ def init_db() -> None:
         # v3.2：盈亏统计口径（created_at=接入日期，pnl_since_ms=统计起点）
         ("created_at", "ALTER TABLE api_accounts ADD COLUMN created_at INTEGER DEFAULT 0"),
         ("pnl_since_ms", "ALTER TABLE api_accounts ADD COLUMN pnl_since_ms INTEGER DEFAULT 0"),
-        # v3.3：信号源二选一（bapi 默认 / tg），由 tg-collector 提供 tg 信号
-        ("signal_source", "ALTER TABLE api_accounts ADD COLUMN signal_source TEXT DEFAULT 'bapi'"),
+        # v3.3：跟随目标二选一 —— followed_trader_id（走 bapi）或 followed_channel（走 TG 频道）
+        ("followed_channel", "ALTER TABLE api_accounts ADD COLUMN followed_channel TEXT"),
     ):
         if col not in account_cols:
             cur.execute(ddl)
@@ -196,6 +196,7 @@ def init_db() -> None:
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             source       TEXT NOT NULL,
             source_key   TEXT NOT NULL,
+            channel      TEXT,             -- TG 频道名（bapi 信号为空）
             portfolio_id TEXT NOT NULL,
             symbol       TEXT NOT NULL,
             side         TEXT NOT NULL,
@@ -217,8 +218,34 @@ def init_db() -> None:
     sig_cols = {row[1] for row in cur.execute("PRAGMA table_info(signals)")}
     if "pre_qty" not in sig_cols:
         cur.execute("ALTER TABLE signals ADD COLUMN pre_qty REAL")
+    if "channel" not in sig_cols:
+        cur.execute("ALTER TABLE signals ADD COLUMN channel TEXT")
 
-    # 9. v3.2 回填：老账户 created_at = 该账户第一笔跟单时间（copy_orders.created_at 是秒）。
+    # 9. TG 频道（v3.3）：频道列表 + 前缀→交易员映射。
+    #    放 DB 而不是配置文件：页面改完 30 秒内采集器自动生效，不需要重启容器。
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tg_channels (
+            channel    TEXT PRIMARY KEY,
+            remark     TEXT DEFAULT '',
+            enabled    INTEGER DEFAULT 1,
+            created_at INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tg_links (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel      TEXT NOT NULL,
+            prefix       TEXT NOT NULL,
+            portfolio_id TEXT NOT NULL,
+            enabled      INTEGER DEFAULT 1,
+            UNIQUE(channel, prefix)
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tg_links_channel ON tg_links (channel)
+    """)
+
+    # 10. v3.2 回填：老账户 created_at = 该账户第一笔跟单时间（copy_orders.created_at 是秒）。
     #    必须放在所有建表之后：本句引用 copy_orders，全新安装时它在上面的迁移段之后才被创建。
     #    无跟单记录的账户回填 0（= 全部历史），不能用 updated_at，否则统计起点会被挪到迁移时刻。
     cur.execute("""

@@ -23,6 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 再复制代码目录。data/ 绝不复制进镜像，运行时由 docker-compose 挂载 ./data:/app/data。
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
+# v3.3：TG 采集模块（同一个镜像跑第二个容器）
+COPY tg/ ./tg/
 
 # 容器内占位目录；实际内容由宿主机 ./data 挂载覆盖。
 RUN mkdir -p /app/data

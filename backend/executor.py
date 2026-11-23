@@ -318,12 +318,19 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter, source: str
         missing=[k for k in required if k not in signal]
         if missing: raise ValueError(f"信号缺字段: {','.join(missing)}")
         conn=db.get_conn()
-        # v3.3：按账户的信号源路由。bapi 采到的信号只喂 signal_source='bapi' 的账户，
-        # TG 采到的只喂 'tg'，从根上避免同一笔被两个源各下一次单。
-        accounts=conn.execute(
-            "SELECT * FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 "
-            "AND COALESCE(signal_source,'bapi')=?",
-            (signal["portfolio_id"], source)).fetchall()
+        # v3.3：按「跟随目标」路由，二选一互斥：
+        #   followed_channel 有值 → 消费该频道的 TG 信号（不看 portfolio_id）
+        #   followed_trader_id 有值 → 消费 bapi 信号（且 followed_channel 必须为空）
+        if source == "tg":
+            accounts=conn.execute(
+                "SELECT * FROM api_accounts WHERE followed_channel=? AND is_enabled=1 "
+                "AND followed_channel IS NOT NULL AND followed_channel<>''",
+                (str(signal.get("channel") or ""),)).fetchall()
+        else:
+            accounts=conn.execute(
+                "SELECT * FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 "
+                "AND COALESCE(followed_channel,'')=''",
+                (signal["portfolio_id"],)).fetchall()
         trow=conn.execute("SELECT margin_balance FROM traders WHERE portfolio_id=?",(signal["portfolio_id"],)).fetchone()
         for account in accounts:
             aid=int(account["id"]); client=ccxt_clients.get(aid)
@@ -397,6 +404,7 @@ def _tg_row_to_signal(row) -> dict:
     is_open = action in ("OPEN", "INCREASE")
     return {
         "portfolio_id": str(row["portfolio_id"]),
+        "channel": (row["channel"] or "") if "channel" in row.keys() else "",
         "symbol": str(row["symbol"]),
         "position_side": str(row["side"]),
         "executed_qty": float(row["qty"] or 0),
