@@ -554,7 +554,7 @@ def _start_admin(loop, cfg, client_ref):
     import json as _json
     import socketserver
 
-    def login_coro():
+    def login_coro(page_password: str = ""):
         async def _do():
             if STATE["login_busy"]:
                 return
@@ -635,7 +635,15 @@ def _start_admin(loop, cfg, client_ref):
             if self.path.startswith("/login/start"):
                 if STATE["authorized"]:
                     self._json({"ok": False, "error": "已登录"}, 409); return
-                login_coro()
+                pw = ""
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                    if length:
+                        data = _json.loads(self.rfile.read(length) or b"{}")
+                        pw = str(data.get("password") or "")
+                except Exception:
+                    pw = ""
+                login_coro(pw)          # 密码只在本次登录的内存里用，不写库不写日志
                 self._json({"ok": True, "message": "已开始扫码登录，请用 /login/qr 取二维码"})
             elif self.path.startswith("/verify"):
                 from urllib.parse import parse_qs, urlparse

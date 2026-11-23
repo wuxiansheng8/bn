@@ -1022,9 +1022,11 @@ def tg_status(token: str | None = None):
 
 
 @app.post("/api/tg/login/start")
-def tg_login_start(token: str | None = None):
+def tg_login_start(token: str | None = None, payload: dict[str, Any] | None = None):
     _auth(token)
-    r = _tg_admin("POST", "/login/start")
+    # 两步验证密码只在本次请求里透传给采集器，不落库、不写日志
+    pw = str((payload or {}).get("password") or "")
+    r = _tg_admin("POST", "/login/start", json={"password": pw} if pw else None)
     return r.json()
 
 

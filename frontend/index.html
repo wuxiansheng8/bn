@@ -252,6 +252,7 @@
     <div class="card p-4 space-y-2">
       <h3 class="font-semibold text-sm">② 登录</h3>
       <div class="flex items-center gap-3">
+        <input v-model="tg2fa" type="password" class="input max-w-[220px]" placeholder="两步验证密码（未开启可留空）" autocomplete="off" />
         <button class="btn btn-primary btn-sm" @click="startTgLogin()" :disabled="tg.authorized||tg.login_busy||!tg.credential_ready">扫码登录</button>
         <span class="text-xs text-ink-400">{{tg.authorized?'已登录，无需重复扫码':(tg.login_busy?'等待扫码…':'')}}</span>
       </div>
@@ -664,7 +665,7 @@ async function loadTraders(silent=false) { if (!silent) tradersLoading.value=tru
     // ── TG 频道设置 ──
     const tg = ref({}); const tgChannels = ref([]); const tgRecent = ref([]);
     const tgSecret = reactive({ api_id:'', api_hash:'', api_hash_set:false });
-    const tgNewChannel = ref(''); const tgLinkForm = reactive({}); const tgCheckResult = reactive({}); const tgQrSrc = ref(''); let tgQrTimer = null;
+    const tgNewChannel = ref(''); const tgLinkForm = reactive({}); const tgCheckResult = reactive({}); const tgQrSrc = ref(''); const tg2fa = ref(''); let tgQrTimer = null;
     function fmtMs(ms) { if (!ms) return '--'; const d=new Date(ms+8*3600e3); return d.toISOString().slice(5,16).replace('T',' '); }
     async function loadTg() {
       try { tg.value = await apiFetch('/api/tg/status'); } catch(e) { tg.value={online:false}; }
@@ -683,7 +684,7 @@ async function loadTraders(silent=false) { if (!silent) tradersLoading.value=tru
       catch(e) { alert('保存失败：'+e.message); }
     }
     async function startTgLogin() {
-      try { await apiFetch('/api/tg/login/start', { method:'POST' }); await loadTg(); } catch(e) { alert('启动登录失败：'+e.message); }
+      try { await apiFetch('/api/tg/login/start', { method:'POST', body: JSON.stringify({ password: tg2fa.value }) }); await loadTg(); } catch(e) { alert('启动登录失败：'+e.message); }
     }
     async function addTgChannel() {
       try { await apiFetch('/api/tg/channels', { method:'POST', body: JSON.stringify({ channel: tgNewChannel.value.trim() }) }); tgNewChannel.value=''; await loadTg(); }
