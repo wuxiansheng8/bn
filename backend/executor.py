@@ -331,7 +331,14 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter, source: str
                 "SELECT * FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 "
                 "AND COALESCE(followed_channel,'')=''",
                 (signal["portfolio_id"],)).fetchall()
-        trow=conn.execute("SELECT margin_balance FROM traders WHERE portfolio_id=?",(signal["portfolio_id"],)).fetchone()
+        # 算量分母：bapi 用交易员账户权益；TG 用该频道下「前缀」的参考资金规模（页面必填）
+        if source == "tg":
+            prow=conn.execute("SELECT ref_equity FROM tg_prefixes WHERE channel=? AND prefix=?",
+                              (signal.get("channel") or "", signal.get("prefix") or "")).fetchone()
+            trow=None
+        else:
+            prow=None
+            trow=conn.execute("SELECT margin_balance FROM traders WHERE portfolio_id=?",(signal["portfolio_id"],)).fetchone()
         for account in accounts:
             aid=int(account["id"]); client=ccxt_clients.get(aid)
             override=conn.execute("SELECT 1 FROM manual_overrides WHERE api_account_id=? AND symbol=? AND position_side=? AND is_overridden=1",(aid,signal["symbol"],signal["position_side"])).fetchone()
@@ -348,7 +355,14 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter, source: str
                 live=bool((config_getter() or {}).get("live_trading_enabled",False))
                 if signal["is_open"]:
                     equity,available=_account_equity(client); conn.execute("UPDATE api_accounts SET cached_equity=?,cached_available=?,updated_at=? WHERE id=?",(equity,available,int(time.time()),aid)); conn.commit()
-                    margin=float(trow["margin_balance"] or 0) if trow else 0
+                    if source == "tg":
+                        margin=float(prow["ref_equity"] or 0) if prow else 0
+                        if margin<=0:
+                            why="该频道前缀未配置参考资金规模，拒绝开仓（避免分母为 0 爆量）"
+                            db.insert_log("ERROR","executor",f"账户 {aid} {signal.get('prefix')} {why}"); notifier.notify("parse_error",why)
+                            _insert_copy(account,signal,"OPEN",0,price,"FAILED","NO_REF_EQUITY"); continue
+                    else:
+                        margin=float(trow["margin_balance"] or 0) if trow else 0
                     qty=calc_open_qty(float(signal["executed_qty"]),margin,equity,float(account["copy_ratio"]),price,step)
                     if qty*price<5:
                         db.insert_log("INFO","executor",f"账户 {aid} 名义价值 {qty*price:.4f} USDT 小于 5，跳过"); _insert_copy(account,signal,"OPEN",qty,price,"SKIPPED","NOTIONAL_BELOW_5"); continue
@@ -405,6 +419,7 @@ def _tg_row_to_signal(row) -> dict:
     return {
         "portfolio_id": str(row["portfolio_id"]),
         "channel": (row["channel"] or "") if "channel" in row.keys() else "",
+        "prefix": (row["prefix"] or "") if "prefix" in row.keys() else "",
         "symbol": str(row["symbol"]),
         "position_side": str(row["side"]),
         "executed_qty": float(row["qty"] or 0),

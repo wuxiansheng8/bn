@@ -197,6 +197,7 @@ def init_db() -> None:
             source       TEXT NOT NULL,
             source_key   TEXT NOT NULL,
             channel      TEXT,             -- TG 频道名（bapi 信号为空）
+            prefix       TEXT,             -- TG 消息头里的交易员标识（bapi 信号为空）
             portfolio_id TEXT NOT NULL,
             symbol       TEXT NOT NULL,
             side         TEXT NOT NULL,
@@ -220,6 +221,8 @@ def init_db() -> None:
         cur.execute("ALTER TABLE signals ADD COLUMN pre_qty REAL")
     if "channel" not in sig_cols:
         cur.execute("ALTER TABLE signals ADD COLUMN channel TEXT")
+    if "prefix" not in sig_cols:
+        cur.execute("ALTER TABLE signals ADD COLUMN prefix TEXT")
 
     # 9. TG 频道（v3.3）：频道列表 + 前缀→交易员映射。
     #    放 DB 而不是配置文件：页面改完 30 秒内采集器自动生效，不需要重启容器。
@@ -231,18 +234,20 @@ def init_db() -> None:
             created_at INTEGER DEFAULT 0
         )
     """)
+    # 频道内的「交易员前缀」：只用于区分群里是谁在发，不绑定系统里的交易员。
+    # ref_equity 是算量分母（页面必填，为 0 表示未配置 → 执行器拒绝下单）。
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS tg_links (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel      TEXT NOT NULL,
-            prefix       TEXT NOT NULL,
-            portfolio_id TEXT NOT NULL,
-            enabled      INTEGER DEFAULT 1,
+        CREATE TABLE IF NOT EXISTS tg_prefixes (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel    TEXT NOT NULL,
+            prefix     TEXT NOT NULL,
+            ref_equity REAL NOT NULL DEFAULT 0,
+            enabled    INTEGER DEFAULT 1,
             UNIQUE(channel, prefix)
         )
     """)
     cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_tg_links_channel ON tg_links (channel)
+        CREATE INDEX IF NOT EXISTS idx_tg_prefixes_channel ON tg_prefixes (channel)
     """)
 
     # 10. v3.2 回填：老账户 created_at = 该账户第一笔跟单时间（copy_orders.created_at 是秒）。

@@ -1101,11 +1101,11 @@ def tg_channels(token: str | None = None):
     rows = conn.execute("SELECT channel, remark, enabled FROM tg_channels ORDER BY created_at, channel").fetchall()
     out = []
     for r in rows:
-        links = conn.execute(
-            "SELECT id, prefix, portfolio_id, enabled FROM tg_links WHERE channel=? ORDER BY id",
+        prefixes = conn.execute(
+            "SELECT id, prefix, ref_equity, enabled FROM tg_prefixes WHERE channel=? ORDER BY id",
             (r["channel"],)).fetchall()
         out.append({"channel": r["channel"], "remark": r["remark"] or "", "enabled": int(r["enabled"]),
-                    "links": [dict(l) for l in links]})
+                    "prefixes": [dict(x) for x in prefixes]})
     return out
 
 
@@ -1148,36 +1148,43 @@ def tg_channel_add(payload: dict[str, Any], token: str | None = None):
 def tg_channel_del(channel: str, token: str | None = None):
     _auth(token)
     conn = db.get_conn()
-    conn.execute("DELETE FROM tg_links WHERE channel=?", (channel,))
+    conn.execute("DELETE FROM tg_prefixes WHERE channel=?", (channel,))
     conn.execute("DELETE FROM tg_channels WHERE channel=?", (channel,))
     conn.commit()
     db.insert_log("INFO", "tg", f"删除 TG 频道 @{channel}（含映射）")
     return {"ok": True}
 
 
-@app.post("/api/tg/links")
-def tg_link_save(payload: dict[str, Any], token: str | None = None):
+@app.post("/api/tg/prefixes")
+def tg_prefix_save(payload: dict[str, Any], token: str | None = None):
+    """新增/更新「频道内的交易员前缀」。参考资金规模是算量分母，必填且 > 0。"""
     _auth(token)
-    ch = str((payload or {}).get("channel") or "").strip()
+    ch = _norm_channel((payload or {}).get("channel"))
     prefix = str(payload.get("prefix") or "").strip()
-    pid = str(payload.get("portfolio_id") or "").strip()
-    if not (ch and prefix and pid):
-        raise HTTPException(400, "频道、前缀、交易员都必须填写")
+    try:
+        ref = float(payload.get("ref_equity") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "参考资金规模必须是数字")
+    if not (ch and prefix):
+        raise HTTPException(400, "频道与前缀都必须填写")
+    if ref <= 0:
+        raise HTTPException(400, "参考资金规模必须大于 0（它是对比算量的分母）")
     conn = db.get_conn()
-    if not conn.execute("SELECT 1 FROM traders WHERE portfolio_id=?", (pid,)).fetchone():
-        raise HTTPException(400, "该交易员不在监控列表里，请先在「监控交易员」中添加")
-    conn.execute("INSERT INTO tg_links (channel, prefix, portfolio_id, enabled) VALUES (?,?,?,1) "
-                 "ON CONFLICT(channel, prefix) DO UPDATE SET portfolio_id=excluded.portfolio_id, enabled=1",
-                 (ch, prefix, pid))
+    if not conn.execute("SELECT 1 FROM tg_channels WHERE channel=?", (ch,)).fetchone():
+        raise HTTPException(400, f"频道 @{ch} 不存在")
+    conn.execute("INSERT INTO tg_prefixes (channel, prefix, ref_equity, enabled) VALUES (?,?,?,1) "
+                 "ON CONFLICT(channel, prefix) DO UPDATE SET ref_equity=excluded.ref_equity, enabled=1",
+                 (ch, prefix, ref))
     conn.commit()
+    db.insert_log("INFO", "tg", f"TG 前缀 {prefix}（@{ch}）参考资金规模 = {ref:g}")
     return {"ok": True}
 
 
-@app.delete("/api/tg/links/{link_id}")
-def tg_link_del(link_id: int, token: str | None = None):
+@app.delete("/api/tg/prefixes/{prefix_id}")
+def tg_prefix_del(prefix_id: int, token: str | None = None):
     _auth(token)
     conn = db.get_conn()
-    conn.execute("DELETE FROM tg_links WHERE id=?", (link_id,))
+    conn.execute("DELETE FROM tg_prefixes WHERE id=?", (prefix_id,))
     conn.commit()
     return {"ok": True}
 

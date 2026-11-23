@@ -269,14 +269,17 @@
           <div class="text-sm font-medium">@{{c.channel}}</div>
           <div class="flex gap-1"><button class="btn btn-ghost btn-sm" @click="checkTgChannel(c.channel)">体检</button><button class="btn btn-ghost btn-sm text-err" @click="delTgChannel(c.channel)">删除</button></div>
         </div>
-        <div v-for="l in c.links" :key="l.id" class="flex items-center gap-2 text-xs">
-          <span class="font-mono">{{l.prefix}}</span><span>→</span><span>{{traderName(l.portfolio_id)}}</span>
-          <button class="btn btn-ghost btn-sm text-err" @click="delTgLink(l.id)">移除</button>
+        <div v-for="pf in c.prefixes" :key="pf.id" class="flex items-center gap-2 text-xs">
+          <span class="font-mono" style="min-width:150px">{{pf.prefix}}</span>
+          <input v-model.number="pf.ref_equity" type="number" min="1" class="input text-xs" style="max-width:150px" placeholder="参考资金规模 U" />
+          <button class="btn btn-ghost btn-sm" @click="saveTgPrefix(c.channel, pf.prefix, pf.ref_equity)">保存</button>
+          <button class="btn btn-ghost btn-sm text-err" @click="delTgPrefix(pf.id)">删除</button>
+          <span v-if="!(pf.ref_equity>0)" class="text-err">未配置资金规模 → 收到信号也不会下单</span>
         </div>
-        <div class="flex gap-2" v-if="tgLinkForm[c.channel]">
-          <input v-model="tgLinkForm[c.channel].prefix" class="input text-xs" placeholder="消息前缀，如 熬鹰币安实盘" />
-          <select v-model="tgLinkForm[c.channel].portfolio_id" class="select text-xs"><option value="">选择交易员</option><option v-for="t in settingsTraders" :key="t.portfolio_id" :value="t.portfolio_id">{{t.nickname}}</option></select>
-          <button class="btn btn-ghost btn-sm" @click="saveTgLink(c.channel)">绑定</button>
+        <div class="flex gap-2" v-if="tgPrefixForm[c.channel]">
+          <input v-model="tgPrefixForm[c.channel].prefix" class="input text-xs" placeholder="消息前缀，如 熬鹰币安实盘" />
+          <input v-model.number="tgPrefixForm[c.channel].ref" type="number" min="1" class="input text-xs" style="max-width:150px" placeholder="参考资金规模 U（必填）" />
+          <button class="btn btn-ghost btn-sm" @click="saveTgPrefix(c.channel)">添加</button>
         </div>
         <div v-if="tgCheckResult[c.channel]" class="text-xs text-ink-400 whitespace-pre-line">{{tgCheckResult[c.channel]}}</div>
       </div>
@@ -665,14 +668,14 @@ async function loadTraders(silent=false) { if (!silent) tradersLoading.value=tru
     // ── TG 频道设置 ──
     const tg = ref({}); const tgChannels = ref([]); const tgRecent = ref([]);
     const tgSecret = reactive({ api_id:'', api_hash:'', api_hash_set:false });
-    const tgNewChannel = ref(''); const tgLinkForm = reactive({}); const tgCheckResult = reactive({}); const tgQrSrc = ref(''); const tg2fa = ref(''); let tgQrTimer = null;
+    const tgNewChannel = ref(''); const tgPrefixForm = reactive({}); const tgCheckResult = reactive({}); const tgQrSrc = ref(''); const tg2fa = ref(''); let tgQrTimer = null;
     function fmtMs(ms) { if (!ms) return '--'; const d=new Date(ms+8*3600e3); return d.toISOString().slice(5,16).replace('T',' '); }
     async function loadTg() {
       try { tg.value = await apiFetch('/api/tg/status'); } catch(e) { tg.value={online:false}; }
       try { tgChannels.value = await apiFetch('/api/tg/channels'); } catch(e) {}
       try { tgRecent.value = await apiFetch('/api/tg/recent'); } catch(e) {}
       try { const r = await apiFetch('/api/tg/secret'); tgSecret.api_id = r.api_id||''; tgSecret.api_hash_set = !!r.api_hash_set; } catch(e) {}
-      tgChannels.value.forEach(c => { if (!tgLinkForm[c.channel]) tgLinkForm[c.channel] = { prefix:'', portfolio_id:'' }; });
+      tgChannels.value.forEach(c => { if (!tgPrefixForm[c.channel]) tgPrefixForm[c.channel] = { prefix:'', ref:'' }; });
       // 二维码走 <img>，不会自动带令牌 → 必须把 token 拼进 URL，否则 401（2026-11-24 生产实测）
       tgQrSrc.value = (tg.value.login_busy && !tg.value.authorized) ? `/api/tg/qr?token=${token.value}&t=${Date.now()}` : '';
       // 扫码期间每 3 秒轮询状态（二维码本身每次请求都会重新渲染）
@@ -694,13 +697,21 @@ async function loadTraders(silent=false) { if (!silent) tradersLoading.value=tru
       if (!confirm(`删除频道 @${ch} 及其映射？`)) return;
       try { await apiFetch(`/api/tg/channels/${ch}`, { method:'DELETE' }); await loadTg(); } catch(e) { alert('删除失败：'+e.message); }
     }
-    async function saveTgLink(ch) {
-      const f = tgLinkForm[ch]; if (!f.prefix.trim() || !f.portfolio_id) { alert('请填写前缀并选择交易员'); return; }
-      try { await apiFetch('/api/tg/links', { method:'POST', body: JSON.stringify({ channel: ch, prefix: f.prefix.trim(), portfolio_id: f.portfolio_id }) }); f.prefix=''; await loadTg(); }
-      catch(e) { alert('绑定失败：'+e.message); }
+    async function saveTgPrefix(ch, prefix, refEquity) {
+      const f = tgPrefixForm[ch] || {};
+      const p = (prefix || f.prefix || '').trim();
+      const r = Number(refEquity !== undefined ? refEquity : f.ref);
+      if (!p) { alert('请填写消息前缀'); return; }
+      if (!(r > 0)) { alert('参考资金规模必须大于 0（算量分母，不能留空）'); return; }
+      try {
+        await apiFetch('/api/tg/prefixes', { method:'POST', body: JSON.stringify({ channel: ch, prefix: p, ref_equity: r }) });
+        if (!prefix) { f.prefix=''; f.ref=''; }
+        await loadTg();
+      } catch(e) { alert('保存失败：'+e.message); }
     }
-    async function delTgLink(id) {
-      try { await apiFetch(`/api/tg/links/${id}`, { method:'DELETE' }); await loadTg(); } catch(e) { alert('移除失败：'+e.message); }
+    async function delTgPrefix(id) {
+      if (!confirm('删除这个前缀？删除后该前缀的消息不再跟单')) return;
+      try { await apiFetch(`/api/tg/prefixes/${id}`, { method:'DELETE' }); await loadTg(); } catch(e) { alert('删除失败：'+e.message); }
     }
     async function checkTgChannel(ch) {
       tgCheckResult[ch] = '体检中…';
@@ -810,8 +821,8 @@ async function loadTraders(silent=false) { if (!silent) tradersLoading.value=tru
       openAddAccount, openEditAccount, saveAccount, deleteAccount, checkApi, checkingId, showCheckResult, checkResult,
       settingsTraders, addTraderInput, addTraderMsg, addTraderOk, addTrader, addTraderBusy, deleteTrader, resetTrader,
       realizedWindowText,
-      tg, tgChannels, tgRecent, tgSecret, tgNewChannel, tgLinkForm, tgCheckResult, tgQrSrc, tg2fa,
-      loadTg, saveTgSecret, startTgLogin, addTgChannel, delTgChannel, saveTgLink, delTgLink, checkTgChannel,
+      tg, tgChannels, tgRecent, tgSecret, tgNewChannel, tgPrefixForm, tgCheckResult, tgQrSrc, tg2fa,
+      loadTg, saveTgSecret, startTgLogin, addTgChannel, delTgChannel, saveTgPrefix, delTgPrefix, checkTgChannel,
       followingChannelAccounts, fmtMs,
       proxies, proxyBulkInput, checkAllRunning, addProxies, checkProxy, checkAllProxies, deleteProxy, collectRhythm, proxyHalted, pollFreqWarn, okProxyCount,
       pollTg, savePollTg, testTg, tgTestMsg, tgTestOk,

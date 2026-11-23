@@ -82,23 +82,24 @@ def api_credentials(cfg: dict) -> tuple[int, str]:
 _cfg_cache = {"at": 0.0, "channels": {}}
 
 
-def load_channels(force: bool = False) -> dict[str, dict[str, str]]:
-    """从 DB 读「启用的频道 → {前缀: portfolio_id}」，缓存 30 秒。
+def load_channels(force: bool = False) -> dict[str, dict[str, float]]:
+    """从 DB 读「启用的频道 → {前缀: 参考资金规模}」，缓存 30 秒。
 
-    放 DB 而不是配置文件：网页上改完最多 30 秒自动生效，不用重启容器。
+    前缀只用于区分频道里的哪个交易员，不绑定系统里的 traders 表。
+    参考资金规模是该前缀的算量分母（页面必填，0 表示未配置 → 执行器会拒绝下单）。
     """
     now = time.time()
     if not force and now - _cfg_cache["at"] < CONFIG_TTL:
         return _cfg_cache["channels"]
-    channels: dict[str, dict[str, str]] = {}
+    channels: dict[str, dict[str, float]] = {}
     try:
         conn = db_conn()
         for row in conn.execute("SELECT channel FROM tg_channels WHERE enabled=1"):
             name = row["channel"]
             channels[name] = {
-                r["prefix"]: r["portfolio_id"]
+                r["prefix"]: float(r["ref_equity"] or 0)
                 for r in conn.execute(
-                    "SELECT prefix, portfolio_id FROM tg_links WHERE channel=? AND enabled=1", (name,))
+                    "SELECT prefix, ref_equity FROM tg_prefixes WHERE channel=? AND enabled=1", (name,))
             }
         conn.close()
     except Exception as exc:
@@ -185,7 +186,7 @@ def detect_window(text: str, template: dict) -> tuple[str | None, str]:
     return None, "unrecognized"
 
 
-def parse_message(text: str, template: dict, traders: dict[str, str]) -> tuple[dict | None, str]:
+def parse_message(text: str, template: dict, prefixes: dict[str, float]) -> tuple[dict | None, str]:
     """把一条频道消息解析成信号；不能解析时返回 (None, 原因)。
 
     只认配置里登记的【前缀】；快照、公告、杠杆变更一律丢弃（返回原因便于 check 统计）。
@@ -198,8 +199,7 @@ def parse_message(text: str, template: dict, traders: dict[str, str]) -> tuple[d
     if not m:
         return None, "no-prefix"
     prefix = m.group(1)
-    portfolio_id = (traders or {}).get(prefix)
-    if not portfolio_id:
+    if prefix not in (prefixes or {}):
         return None, "unknown-prefix"
     action, basis = detect_window(text, template)
     if not action:
@@ -235,7 +235,8 @@ def parse_message(text: str, template: dict, traders: dict[str, str]) -> tuple[d
     else:
         pre_qty = qty
     return {
-        "portfolio_id": str(portfolio_id),
+        "prefix": prefix,
+        "portfolio_id": "",          # 由 handle_message 填成 tg:频道:前缀
         "symbol": symbol,
         "side": side,
         "action": action,
@@ -265,14 +266,14 @@ def save_signal(conn: sqlite3.Connection, msg_id: int, parsed: dict, event_ms: i
     #   已执行 → 保持原样，绝不二次下单。
     cur = conn.execute(
         "INSERT INTO signals"
-        "(source, source_key, channel, portfolio_id, symbol, side, action, qty, pre_qty, price, event_ms, raw)"
-        " VALUES ('tg',?,?,?,?,?,?,?,?,?,?,?)"
+        "(source, source_key, channel, prefix, portfolio_id, symbol, side, action, qty, pre_qty, price, event_ms, raw)"
+        " VALUES ('tg',?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(source, source_key) DO UPDATE SET"
-        " channel=excluded.channel, portfolio_id=excluded.portfolio_id, symbol=excluded.symbol,"
+        " channel=excluded.channel, prefix=excluded.prefix, portfolio_id=excluded.portfolio_id, symbol=excluded.symbol,"
         " side=excluded.side, action=excluded.action, qty=excluded.qty, pre_qty=excluded.pre_qty,"
         " price=excluded.price, event_ms=excluded.event_ms, raw=excluded.raw"
         " WHERE signals.consumed_at=0",
-        (str(msg_id), parsed.get("channel"), parsed["portfolio_id"], parsed["symbol"], parsed["side"],
+        (str(msg_id), parsed.get("channel"), parsed.get("prefix"), parsed["portfolio_id"], parsed["symbol"], parsed["side"],
          parsed["action"], parsed["qty"], parsed.get("pre_qty"), parsed["price"], event_ms, raw[:2000]))
     conn.commit()
     return cur.rowcount > 0
@@ -280,16 +281,17 @@ def save_signal(conn: sqlite3.Connection, msg_id: int, parsed: dict, event_ms: i
 
 def handle_message(conn: sqlite3.Connection, cfg: dict, channel: str, msg) -> None:
     text = msg.message or ""
-    traders = load_channels().get(channel, {})
-    if not traders:
-        return                              # 该频道未配置任何交易员映射
-    parsed, reason = parse_message(text, template_for(cfg, channel), traders)
+    prefixes = load_channels().get(channel, {})
+    if not prefixes:
+        return                              # 该频道还没配置任何前缀
+    parsed, reason = parse_message(text, template_for(cfg, channel), prefixes)
     if not parsed:
         if reason not in ("snapshot", "empty", "no-prefix", "unknown-prefix", "leverage-only"):
             log(f"解析失败({reason}) #{msg.id}: {text[:80]}", "WARN")
         return
     event_ms = int(msg.date.timestamp() * 1000)
     parsed["channel"] = channel
+    parsed["portfolio_id"] = f"tg:{channel}:{parsed['prefix']}"
     if save_signal(conn, msg.id, parsed, event_ms, text):
         log(f"NEW #{msg.id} {parsed['action']} {parsed['symbol']} {parsed['side']} "
             f"qty={parsed['qty']:g} ({parsed['basis']})")
@@ -465,19 +467,19 @@ async def cmd_check(args) -> int:
         print("尚未登录，请先执行：python -m tg.collector login --qr", file=sys.stderr)
         return 2
     target = args.channel.lstrip("@").lower()
-    traders = load_channels(force=True).get(target, {})
-    if not traders:
-        print(f"频道 @{target} 未配置交易员映射：请先在「TG 频道设置」里添加", file=sys.stderr)
+    prefixes = load_channels(force=True).get(target, {})
+    if not prefixes:
+        print(f"频道 @{target} 还没配置任何「交易员前缀」：请先在「TG 频道设置」里添加", file=sys.stderr)
         await client.disconnect()
         return 2
-    reporter = await _run_check(client, cfg, target, traders, args.limit)
+    reporter = await _run_check(client, cfg, target, prefixes, args.limit)
     for line in reporter["lines"]:
         print(line)
     await client.disconnect()
     return 0
 
 
-async def _run_check(client, cfg: dict, target: str, traders: dict, limit: int) -> dict:
+async def _run_check(client, cfg: dict, target: str, prefixes: dict, limit: int) -> dict:
     """体检：拉 N 条消息试解析，返回统计（CLI 与网页共用）。"""
     msgs = await client.get_messages(target, limit=limit)
     template = template_for(cfg, target)
@@ -488,7 +490,7 @@ async def _run_check(client, cfg: dict, target: str, traders: dict, limit: int) 
         pm = re.search(r"【([^】]{2,24})】", text)
         if pm:
             prefixes[pm.group(1)] = prefixes.get(pm.group(1), 0) + 1
-        parsed, reason = parse_message(text, template, traders)
+        parsed, reason = parse_message(text, template, prefixes)
         reasons[reason] = reasons.get(reason, 0) + 1
         if parsed:
             ok += 1
@@ -498,7 +500,7 @@ async def _run_check(client, cfg: dict, target: str, traders: dict, limit: int) 
     if rate >= 10 and reasons.get("unrecognized", 0) <= max(2, total * 0.05):
         advice = "可以直接接入"
     elif reasons.get("unknown-prefix", 0) > total * 0.5:
-        advice = "前缀未在 TG 频道设置里登记，先补交易员映射"
+        advice = "多数消息的前缀未在频道里登记：把要抓的前缀加到「TG 频道设置」"
     else:
         advice = "格式差异较大：先补同义词/字段映射，或放弃该频道"
     lines = [
@@ -675,11 +677,11 @@ def _start_admin(loop, cfg, client_ref):
                 client = client_ref.get("client")
                 if not client:
                     self._json({"ok": False, "error": "采集器尚未连接（未登录）"}, 409); return
-                traders = load_channels(force=True).get(ch, {})
-                if not traders:
-                    self._json({"ok": False, "error": f"频道 @{ch} 未配置映射"}, 400); return
+                prefixes = load_channels(force=True).get(ch, {})
+                if not prefixes:
+                    self._json({"ok": False, "error": f"频道 @{ch} 还没配置前缀"}, 400); return
                 fut = asyncio.run_coroutine_threadsafe(
-                    _run_check(client, cfg, ch, traders, 200), loop)
+                    _run_check(client, cfg, ch, prefixes, 200), loop)
                 try:
                     self._json({"ok": True, "report": fut.result(timeout=90)})
                 except Exception as exc:
