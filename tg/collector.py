@@ -580,11 +580,19 @@ def _start_admin(loop, cfg, client_ref):
                         await qr.recreate()
                     except Exception as exc:
                         if "SessionPasswordNeeded" in type(exc).__name__:
-                            pw = _two_factor_password()
+                            # 密码来源优先级：页面本次提交 > 一次性文件 > 环境变量 > 终端
+                            pw = (page_password or "").strip() or _two_factor_password()
                             if not pw:
-                                STATE["last_error"] = "需要两步验证密码"
+                                STATE["last_error"] = "该账号开启两步验证：请在页面填写密码后重试"
+                                log("登录中止：需要两步验证密码（页面未填写）", "ERROR")
                                 raise
-                            await c.sign_in(password=pw)
+                            log("检测到两步验证，正在用密码完成登录")
+                            try:
+                                await c.sign_in(password=pw)
+                            except Exception as exc2:
+                                STATE["last_error"] = "两步验证密码错误：请确认后重新点「扫码登录」"
+                                log(f"两步验证失败：{type(exc2).__name__}", "ERROR")
+                                raise
                             break
                         raise
                 if await c.is_user_authorized():
