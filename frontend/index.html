@@ -77,7 +77,7 @@
                 <div class="font-semibold text-sm">{{acc.remark}}</div>
                 <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" :class="acc.is_enabled&&!acc.status_msg?'bg-ok':'bg-err'"></span><span class="text-xs text-ink-400">{{acc.is_enabled&&!acc.status_msg?'正常':'异常'}}</span></div>
               </div>
-              <div class="text-xs text-ink-400">跟随：{{traderName(acc.followed_trader_id)}}</div>
+              <div class="text-xs text-ink-400">跟随：{{traderName(acc.followed_trader_id)}}<span v-if="acc.followed_trader_id" class="ml-2">信号源：<span class="font-medium" :class="acc.signal_source==='tg'?'text-ok':'text-ink-500'">{{acc.signal_source==='tg'?'TG 频道':'币安接口'}}</span></span></div>
               <div class="grid grid-cols-2 gap-2 text-xs">
                 <div><span class="text-ink-400">净值</span> <span class="font-medium">{{fNum(accLiveEquity(acc))}} U</span></div>
                 <div><span class="text-ink-400">可用</span> <span class="font-medium">{{fNum(acc.cached_available)}} U</span><span class="text-ink-400 ml-1">{{acc.updated_at?'('+formatTime(acc.updated_at*1000).slice(11)+')':''}}</span></div>
@@ -273,6 +273,7 @@
       <div><label class="block text-xs text-ink-400 mb-1">备注名 *</label><input v-model="accountForm.remark" class="input" /></div>
       <div><label class="block text-xs text-ink-400 mb-1">API Key *</label><input v-model="accountForm.api_key" class="input font-mono text-xs" :placeholder="editingAccount?'留空不改':'必填'" /></div>
       <div><label class="block text-xs text-ink-400 mb-1">API Secret *</label><input v-model="accountForm.api_secret" class="input font-mono text-xs" :placeholder="editingAccount?'留空不改':'必填'" /></div>
+      <div><label class="block text-xs text-ink-400 mb-1">信号源（仅跟随交易员时生效）</label><select v-model="accountForm.signal_source" class="select w-full"><option value="bapi">币安接口（慢 ~120 秒，最稳）</option><option value="tg">TG 频道（快 ~100 秒，需 tg-collector 运行）</option></select></div>
       <div><label class="block text-xs text-ink-400 mb-1">跟随交易员（1对1单选）</label><select v-model="accountForm.followed_trader_id" class="select w-full"><option value="">不跟随（仅观察）</option><option v-for="t in settingsTraders" :key="t.portfolio_id" :value="t.portfolio_id">{{t.nickname}} ({{t.portfolio_id}})</option></select></div>
       <div class="grid grid-cols-2 gap-2"><div><label class="block text-xs text-ink-400 mb-1">跟单比例</label><input v-model.number="accountForm.copy_ratio" type="number" step="0.01" min="0.01" class="input" /></div><div><label class="block text-xs text-ink-400 mb-1">默认杠杆</label><input v-model.number="accountForm.default_leverage" type="number" min="1" max="125" class="input" /></div></div>
       <div class="grid grid-cols-2 gap-2"><div><label class="block text-xs text-ink-400 mb-1">盈亏统计起点</label><input v-model="accountForm.pnl_since_date" type="date" class="input" /></div><div class="text-[11px] text-ink-400 self-end pb-2">留空 = 从接入系统那天算起</div></div>
@@ -337,7 +338,7 @@ createApp({
     const settingsAccounts = ref([]); const settingsAccountsLoading = ref(false);
     const settingsTraders = ref([]);
     const showAccountModal = ref(false); const editingAccount = ref(null);
-    const accountForm = reactive({ remark:'', api_key:'', api_secret:'', copy_ratio:1.0, default_leverage:10, is_enabled:true, followed_trader_id:'', pnl_since_date:'' });
+    const accountForm = reactive({ remark:'', api_key:'', api_secret:'', copy_ratio:1.0, default_leverage:10, is_enabled:true, followed_trader_id:'', signal_source:'bapi', pnl_since_date:'' });
     const accountFormErr = ref(''); const checkingId = ref(0);
     const showCheckResult = ref(false); const checkResult = ref({});
     const addTraderInput = ref(''); const addTraderMsg = ref(''); const addTraderOk = ref(false); const addTraderBusy = ref(false);
@@ -548,8 +549,8 @@ async function loadTraders() { tradersLoading.value=true; tradersErr.value=''; t
     }
 
     async function loadSettingsAccounts() { settingsAccountsLoading.value=true; try { settingsAccounts.value=await apiFetch('/api/settings/api-accounts'); } catch(e) {} finally { settingsAccountsLoading.value=false; } }
-    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:'',pnl_since_date:''}); accountFormErr.value=''; showAccountModal.value=true; }
-    function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||'',pnl_since_date:(acc.pnl_since_ms?new Date(acc.pnl_since_ms+8*3600e3).toISOString().slice(0,10):'')}); accountFormErr.value=''; showAccountModal.value=true; }
+    function openAddAccount() { editingAccount.value=null; Object.assign(accountForm, {remark:'',api_key:'',api_secret:'',copy_ratio:1.0,default_leverage:10,is_enabled:true,followed_trader_id:'',signal_source:'bapi',pnl_since_date:''}); accountFormErr.value=''; showAccountModal.value=true; }
+    function openEditAccount(acc) { editingAccount.value=acc; Object.assign(accountForm, {remark:acc.remark,api_key:'',api_secret:'',copy_ratio:acc.copy_ratio,default_leverage:acc.default_leverage,is_enabled:acc.is_enabled,followed_trader_id:acc.followed_trader_id||'',signal_source:acc.signal_source||'bapi',pnl_since_date:(acc.pnl_since_ms?new Date(acc.pnl_since_ms+8*3600e3).toISOString().slice(0,10):'')}); accountFormErr.value=''; showAccountModal.value=true; }
     async function saveAccount() {
       accountFormErr.value=''; if (!accountForm.remark.trim()) { accountFormErr.value='备注名必填'; return; }
       if (!editingAccount.value && (!accountForm.api_key.trim()||!accountForm.api_secret.trim())) { accountFormErr.value='新增时 API Key 和 Secret 必填'; return; }

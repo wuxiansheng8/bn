@@ -312,12 +312,18 @@ def _refresh_equity_cache(account_id: int) -> None:
     except Exception as exc:
         db.insert_log("WARN", "executor", f"刷新账户余额缓存失败 {account_id}: {exc}")
 
-def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
+def _process_signal(signal: dict, ccxt_clients: dict, config_getter, source: str = "bapi") -> None:
     try:
         required=("portfolio_id","symbol","position_side","executed_qty","avg_price","is_open")
         missing=[k for k in required if k not in signal]
         if missing: raise ValueError(f"信号缺字段: {','.join(missing)}")
-        conn=db.get_conn(); accounts=conn.execute("SELECT * FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1",(signal["portfolio_id"],)).fetchall()
+        conn=db.get_conn()
+        # v3.3：按账户的信号源路由。bapi 采到的信号只喂 signal_source='bapi' 的账户，
+        # TG 采到的只喂 'tg'，从根上避免同一笔被两个源各下一次单。
+        accounts=conn.execute(
+            "SELECT * FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 "
+            "AND COALESCE(signal_source,'bapi')=?",
+            (signal["portfolio_id"], source)).fetchall()
         trow=conn.execute("SELECT margin_balance FROM traders WHERE portfolio_id=?",(signal["portfolio_id"],)).fetchone()
         for account in accounts:
             aid=int(account["id"]); client=ccxt_clients.get(aid)
@@ -378,6 +384,60 @@ def _process_signal(signal: dict, ccxt_clients: dict, config_getter) -> None:
         logger.exception("信号解析失败"); db.insert_log("ERROR","executor",f"信号解析异常: {exc}"); notifier.notify("parse_error",str(exc))
 
 
+# ---------------------------------------------------------------------------
+# v3.3：TG 信号消费。tg-collector 把解析结果写进 signals 表，这里轮询取走并复用
+# 同一套 _process_signal（算量/闸门/下单/记账全都不用重写）。
+# ---------------------------------------------------------------------------
+TG_POLL_SEC = 2.0
+
+
+def _tg_row_to_signal(row) -> dict:
+    """signals 行 → _process_signal 认识的信号结构。"""
+    action = str(row["action"])
+    is_open = action in ("OPEN", "INCREASE")
+    return {
+        "portfolio_id": str(row["portfolio_id"]),
+        "symbol": str(row["symbol"]),
+        "position_side": str(row["side"]),
+        "executed_qty": float(row["qty"] or 0),
+        "avg_price": float(row["price"] or 0),
+        "is_open": is_open,
+        # 平仓/减仓要按 (本次减少量 / 事件前持仓) 的比例平我方仓位，铁律 4 同口径
+        "pre_close_qty": None if is_open else float(row["pre_qty"] or 0),
+        "source": "tg",
+    }
+
+
+def _tg_consumer():
+    while _running.is_set():
+        try:
+            conn = db.get_conn()
+            rows = conn.execute(
+                "SELECT * FROM signals WHERE source='tg' AND consumed_at=0 ORDER BY id LIMIT 50"
+            ).fetchall()
+            for row in rows:
+                # 先认领再下单：若下单途中进程崩溃，重启后不会重复开仓（宁可漏一笔，
+                # 也不能重复下单）。标记成功后才真正执行。
+                claimed = conn.execute(
+                    "UPDATE signals SET consumed_at=? WHERE id=? AND consumed_at=0",
+                    (int(time.time()), row["id"])).rowcount
+                conn.commit()
+                if not claimed:
+                    continue
+                sig = _tg_row_to_signal(row)
+                try:
+                    if sig["executed_qty"] <= 0 or sig["avg_price"] <= 0:
+                        db.insert_log("WARN", "tg", f"信号 #{row['source_key']} 数量或价格异常，跳过")
+                    else:
+                        _process_signal(sig, _clients, _config_getter, source="tg")
+                except Exception as exc:
+                    logger.exception("TG 信号处理失败")
+                    db.insert_log("ERROR", "tg", f"信号 #{row['source_key']} 处理失败（已标记消费，不重试）: {exc}")
+        except Exception as exc:
+            db.insert_log("ERROR", "tg", f"消费 TG 信号异常: {exc}")
+        time.sleep(TG_POLL_SEC)
+
+
 def start_executor(ccxt_clients: dict, ws_broadcast_fn, config_getter) -> None:
     global _thread,_clients,_config_getter,_ws_push
     _clients,_config_getter=ccxt_clients,config_getter; _ws_push=ws_broadcast_fn
@@ -389,7 +449,9 @@ def start_executor(ccxt_clients: dict, ws_broadcast_fn, config_getter) -> None:
             except queue.Empty: continue
             try: _process_signal(event,_clients,_config_getter)
             finally: signal_queue.task_done()
-    _thread=threading.Thread(target=consume,daemon=True,name="copy-executor"); _thread.start(); db.insert_log("INFO","executor","执行器已启动（实盘默认关闭）")
+    _thread=threading.Thread(target=consume,daemon=True,name="copy-executor"); _thread.start()
+    threading.Thread(target=_tg_consumer,daemon=True,name="tg-consumer").start()
+    db.insert_log("INFO","executor","执行器已启动（实盘默认关闭；TG 信号消费已开启）")
 
 
 def stop_executor() -> None:

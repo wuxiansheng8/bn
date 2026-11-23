@@ -7,3 +7,8 @@ __pycache__/
 .venv/
 venv/
 *.log
+
+# v3.3 TG 采集：登录 session 与 api 凭据不进仓库
+tg/session/
+tg/secret.json
+tg/venv/

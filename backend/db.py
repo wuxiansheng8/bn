@@ -49,7 +49,8 @@ def init_db() -> None:
             status_msg       TEXT DEFAULT '',
             updated_at       INTEGER DEFAULT 0,
             created_at       INTEGER DEFAULT 0,
-            pnl_since_ms     INTEGER DEFAULT 0
+            pnl_since_ms     INTEGER DEFAULT 0,
+            signal_source    TEXT DEFAULT 'bapi'
         )
     """)
 
@@ -115,6 +116,8 @@ def init_db() -> None:
         # v3.2：盈亏统计口径（created_at=接入日期，pnl_since_ms=统计起点）
         ("created_at", "ALTER TABLE api_accounts ADD COLUMN created_at INTEGER DEFAULT 0"),
         ("pnl_since_ms", "ALTER TABLE api_accounts ADD COLUMN pnl_since_ms INTEGER DEFAULT 0"),
+        # v3.3：信号源二选一（bapi 默认 / tg），由 tg-collector 提供 tg 信号
+        ("signal_source", "ALTER TABLE api_accounts ADD COLUMN signal_source TEXT DEFAULT 'bapi'"),
     ):
         if col not in account_cols:
             cur.execute(ddl)
@@ -186,10 +189,38 @@ def init_db() -> None:
         ON system_logs (created_at DESC)
     """)
 
-    # v3.2 回填：老账户 created_at = 该账户第一笔跟单时间（copy_orders.created_at 是秒）。
-    # 必须放在所有建表之后：本句引用 copy_orders，全新安装时它在上面的迁移段之后才被创建，
-    # 放前面会让空库首次 init_db 直接抛 "no such table: copy_orders"（2026-11-23 发现并修复）。
-    # 无跟单记录的账户回填 0（= 全部历史），不能用 updated_at，否则统计起点会被挪到迁移时刻。
+    # 8. 信号表（v3.3）：tg-collector 写入，执行器读取。两进程唯一通信点。
+    #    UNIQUE(source, source_key) 提供幂等：重连/重启/编辑重推都不会重复下单。
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            source       TEXT NOT NULL,
+            source_key   TEXT NOT NULL,
+            portfolio_id TEXT NOT NULL,
+            symbol       TEXT NOT NULL,
+            side         TEXT NOT NULL,
+            action       TEXT NOT NULL,
+            qty          REAL,
+            pre_qty      REAL,          -- 事件发生前交易员的持仓量（减仓要按比例平，见 11.4）
+            price        REAL,
+            event_ms     INTEGER,
+            raw          TEXT,
+            consumed_at  INTEGER DEFAULT 0,
+            UNIQUE(source, source_key)
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_signals_consume
+        ON signals (consumed_at, id)
+    """)
+    # 兼容旧库：signals 补 pre_qty（v3.3 实现减仓比例时新增）
+    sig_cols = {row[1] for row in cur.execute("PRAGMA table_info(signals)")}
+    if "pre_qty" not in sig_cols:
+        cur.execute("ALTER TABLE signals ADD COLUMN pre_qty REAL")
+
+    # 9. v3.2 回填：老账户 created_at = 该账户第一笔跟单时间（copy_orders.created_at 是秒）。
+    #    必须放在所有建表之后：本句引用 copy_orders，全新安装时它在上面的迁移段之后才被创建。
+    #    无跟单记录的账户回填 0（= 全部历史），不能用 updated_at，否则统计起点会被挪到迁移时刻。
     cur.execute("""
         UPDATE api_accounts SET created_at = COALESCE(
             (SELECT MIN(c.created_at) * 1000 FROM copy_orders c WHERE c.api_account_id = api_accounts.id),

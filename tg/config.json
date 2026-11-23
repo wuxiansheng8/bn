@@ -1,0 +1,31 @@
+{
+  "_说明": "频道与解析模板。换频道/换人只改这里，不用动 collector.py 代码。api_id/api_hash 放 secret.json（不进仓库）。",
+  "channels": {
+    "shipan_jiankong": {
+      "traders": {
+        "熬鹰币安实盘": "5075281354358777856"
+      },
+      "template": {
+        "fields": {
+          "symbol": "币种",
+          "side": "方向",
+          "qty_open": "持仓量",
+          "qty_prev": "原仓位",
+          "qty_now": "现仓位",
+          "qty_close": "平仓数量",
+          "price": "当前价格"
+        },
+        "actions": {
+          "新开仓": "OPEN",
+          "建仓": "OPEN",
+          "开仓": "OPEN",
+          "加仓": "INCREASE",
+          "补仓": "INCREASE",
+          "减仓": "DECREASE",
+          "平仓": "CLOSE",
+          "清仓": "CLOSE"
+        }
+      }
+    }
+  }
+}

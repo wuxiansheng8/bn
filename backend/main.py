@@ -344,6 +344,7 @@ def _account_json(row) -> dict:
             "realized_pnl": row["realized_pnl"] or 0.0,
             "created_at": (row["created_at"] or 0) if "created_at" in row.keys() else 0,
             "pnl_since_ms": (row["pnl_since_ms"] or 0) if "pnl_since_ms" in row.keys() else 0,
+            "signal_source": (row["signal_source"] or "bapi") if "signal_source" in row.keys() else "bapi",
             "status_msg": row["status_msg"]}
 
 
@@ -626,18 +627,22 @@ async def save_api_account(payload: dict[str,Any], token: str | None=None):
         others=conn.execute("SELECT count(*) FROM api_accounts WHERE followed_trader_id=? AND is_enabled=1 AND id!=?",(trader,payload.get("id",-1))).fetchone()[0]
         if others: db.insert_log("INFO","api",f"交易员 {trader} 已有 {others} 个启用账户跟随，本次允许并存（多账户将各自下单）")
     common=(payload["remark"],float(payload.get("copy_ratio",1)),int(payload.get("default_leverage",10)),int(bool(payload.get("is_enabled",True))),trader)
+    # v3.3：信号源二选一（bapi 默认 / tg）。只接受这两个值，防止前端传脏数据导致该账户永远收不到信号。
+    source=str(payload.get("signal_source") or "bapi").strip().lower()
+    if source not in ("bapi", "tg"):
+        raise HTTPException(400,"信号源只能是 bapi 或 tg")
     # v3.2：盈亏统计起点（0 = 全部历史）。允许传 ms 时间戳或 YYYY-MM-DD 字符串，留空/0 即全部。
     since_ms = _parse_since(payload.get("pnl_since_ms"))
     if editing:
         if bool(payload.get("api_key")) != bool(payload.get("api_secret")):
             raise HTTPException(400,"修改密钥时 api_key 和 api_secret 必须同时填写")
         account_id=int(payload["id"])
-        conn.execute("UPDATE api_accounts SET remark=?,copy_ratio=?,default_leverage=?,is_enabled=?,followed_trader_id=?,pnl_since_ms=?,updated_at=? WHERE id=?",(*common,since_ms,int(time.time()),account_id))
+        conn.execute("UPDATE api_accounts SET remark=?,copy_ratio=?,default_leverage=?,is_enabled=?,followed_trader_id=?,signal_source=?,pnl_since_ms=?,updated_at=? WHERE id=?",(*common,source,since_ms,int(time.time()),account_id))
         if payload.get("api_key") and payload.get("api_secret"):
             conn.execute("UPDATE api_accounts SET api_key_enc=?,api_secret_enc=? WHERE id=?",(encrypt(payload["api_key"]),encrypt(payload["api_secret"]),account_id))
     else:
         values=(common[0],encrypt(payload["api_key"]),encrypt(payload["api_secret"]),*common[1:])
-        cur=conn.execute("INSERT INTO api_accounts(remark,api_key_enc,api_secret_enc,copy_ratio,default_leverage,is_enabled,followed_trader_id,pnl_since_ms,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",(*values,since_ms,int(time.time()*1000),int(time.time())))
+        cur=conn.execute("INSERT INTO api_accounts(remark,api_key_enc,api_secret_enc,copy_ratio,default_leverage,is_enabled,followed_trader_id,signal_source,pnl_since_ms,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(*values,source,since_ms,int(time.time()*1000),int(time.time())))
         account_id=cur.lastrowid
     _pnl_refreshed_at.pop(account_id, None)      # 改了统计起点就立即按新口径重算，不等 60 秒
     conn.commit()
