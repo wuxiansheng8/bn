@@ -484,12 +484,15 @@ async def _run_check(client, cfg: dict, target: str, prefixes: dict, limit: int)
     msgs = await client.get_messages(target, limit=limit)
     template = template_for(cfg, target)
     total = len(msgs)
-    prefixes, reasons, actions, ok = {}, {}, {}, 0
+    # 注意：这里统计的是「看到的前缀次数」，变量名必须是 seen。
+    # 曾经写成 prefixes = {} 把入参覆盖掉，结果体检把所有前缀都当成已登记，
+    # 未登记的前缀也会被解析（2026-11-24 生产发现）。
+    seen, reasons, actions, ok = {}, {}, {}, 0
     for m in msgs:
         text = m.message or ""
         pm = re.search(r"【([^】]{2,24})】", text)
         if pm:
-            prefixes[pm.group(1)] = prefixes.get(pm.group(1), 0) + 1
+            seen[pm.group(1)] = seen.get(pm.group(1), 0) + 1
         parsed, reason = parse_message(text, template, prefixes)
         reasons[reason] = reasons.get(reason, 0) + 1
         if parsed:
@@ -506,14 +509,14 @@ async def _run_check(client, cfg: dict, target: str, prefixes: dict, limit: int)
     lines = [
         f"频道：@{target}   样本：{total} 条",
         "-" * 34,
-        "前缀分布：" + " | ".join(f"{k} {v}" for k, v in sorted(prefixes.items(), key=lambda x: -x[1])),
+        "前缀分布：" + " | ".join(f"{k} {v}" for k, v in sorted(seen.items(), key=lambda x: -x[1])),
         "解析结果：" + " | ".join(f"{k} {v}" for k, v in sorted(reasons.items(), key=lambda x: -x[1])),
         "动作分布：" + (" | ".join(f"{k} {v}" for k, v in sorted(actions.items())) or "-"),
         f"可执行信号：{ok} 条（{rate:.0f}%），快照占比 {snap:.0f}%",
         f"建议：{advice}",
     ]
     return {"total": total, "ok": ok, "rate": round(rate, 1), "snapshot_pct": round(snap, 1),
-            "prefixes": prefixes, "actions": actions, "reasons": reasons,
+            "prefixes": seen, "actions": actions, "reasons": reasons,
             "advice": advice, "lines": lines}
 
 
