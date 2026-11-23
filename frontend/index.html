@@ -262,7 +262,7 @@
 
     <div class="card p-4 space-y-3">
       <h3 class="font-semibold text-sm">③ 频道与交易员映射</h3>
-      <div class="flex gap-2"><input v-model="tgNewChannel" class="input" placeholder="频道 username，如 shipan_jiankong" /><button class="btn btn-primary btn-sm" @click="addTgChannel()" :disabled="!tgNewChannel.trim()">添加频道</button></div>
+      <div class="flex gap-2"><input v-model="tgNewChannel" class="input" placeholder="频道 username 或链接，如 @shipan_jiankong / https://t.me/shipan_jiankong" /><button class="btn btn-primary btn-sm" @click="addTgChannel()" :disabled="!tgNewChannel.trim()">添加频道</button></div>
       <div v-if="!tgChannels.length" class="text-xs text-ink-400">还没有频道</div>
       <div v-for="c in tgChannels" :key="c.channel" class="border-t border-ink-100 pt-3 space-y-2">
         <div class="flex justify-between items-center">

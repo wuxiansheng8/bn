@@ -1109,18 +1109,31 @@ def tg_channels(token: str | None = None):
     return out
 
 
+def _norm_channel(raw: str) -> str:
+    """把用户输入整理成频道 username：支持 @xxx、t.me/xxx、https://t.me/xxx（含 ?query）。"""
+    s = (raw or "").strip()
+    s = re.sub(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/", "", s, flags=re.I)
+    s = s.split("?")[0].split("#")[0].strip().strip("/")
+    return s.lstrip("@").strip().lower()
+
+
 @app.post("/api/tg/channels")
 def tg_channel_add(payload: dict[str, Any], token: str | None = None):
     _auth(token)
-    ch = str((payload or {}).get("channel") or "").strip().lstrip("@").lower()
+    ch = _norm_channel((payload or {}).get("channel"))
     if not ch:
         raise HTTPException(400, "频道名不能为空")
+    if not re.fullmatch(r"[a-z0-9_]{3,64}", ch):
+        raise HTTPException(400, "频道名不合法：请填 @username 或 https://t.me/username")
     # 先让采集器确认频道真实存在：填错 username 当场报错，而不是等日志里出现“加入失败”
     try:
-        r = _tg_admin("GET", f"/verify?channel={ch}", timeout=20)
+        r = _tg_admin("POST", f"/verify?channel={ch}", timeout=20)   # 采集器该接口是 POST
     except HTTPException:
         raise HTTPException(409, "采集器未在线：请先完成登录，再添加频道")
-    info = r.json()
+    try:
+        info = r.json()
+    except Exception:
+        raise HTTPException(502, f"采集器返回异常（HTTP {r.status_code}），请稍后重试")
     if not info.get("ok"):
         raise HTTPException(400, info.get("error") or "频道校验失败")
     conn = db.get_conn()
