@@ -997,7 +997,8 @@ async def price_stream_status(token: str | None=None):
 # 管理接口只绑 127.0.0.1:8098（采集容器），浏览器不直连，权限与主程序一致。
 # ---------------------------------------------------------------------------
 TG_ADMIN = os.environ.get("TG_ADMIN_URL") or "http://127.0.0.1:8098"
-TG_SECRET_PATH = BASE_DIR / "tg" / "secret.json"
+TG_SECRET_PATH = DATA_DIR / "tg_secret.json"          # 共享卷：两个容器都挂载 ./data
+TG_SECRET_LEGACY = BASE_DIR / "tg" / "secret.json"    # 旧位置，仅用于读取兼容
 
 
 def _tg_admin(method: str, path: str, timeout: float = 10, **kwargs):
@@ -1050,14 +1051,22 @@ def tg_check(payload: dict[str, Any], token: str | None = None):
         raise HTTPException(502, f"体检失败：{r.status_code}")
 
 
+def _read_tg_secret() -> dict:
+    """读凭据：优先新位置 data/tg_secret.json，其次旧的 tg/secret.json。"""
+    for path in (TG_SECRET_PATH, TG_SECRET_LEGACY):
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+    return {}
+
+
 @app.get("/api/tg/secret")
 def tg_secret_get(token: str | None = None):
     _auth(token)
-    if not TG_SECRET_PATH.exists():
-        return {"api_id": "", "api_hash_set": False}
-    try:
-        data = json.loads(TG_SECRET_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    data = _read_tg_secret()
+    if not data:
         return {"api_id": "", "api_hash_set": False}
     return {"api_id": str(data.get("api_id") or ""), "api_hash_set": bool(data.get("api_hash"))}
 
@@ -1070,13 +1079,7 @@ def tg_secret_save(payload: dict[str, Any], token: str | None = None):
     if not api_id.isdigit():
         raise HTTPException(400, "api_id 必须是数字")
     if not api_hash:                      # 留空 = 不修改已有 hash
-        old = {}
-        if TG_SECRET_PATH.exists():
-            try:
-                old = json.loads(TG_SECRET_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                old = {}
-        api_hash = str(old.get("api_hash") or "")
+        api_hash = str(_read_tg_secret().get("api_hash") or "")
     if len(api_hash) < 20:
         raise HTTPException(400, "api_hash 长度不足（首次必须填）")
     TG_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)

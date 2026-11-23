@@ -41,6 +41,11 @@ SESSION_PATH = SESSION_DIR / "tg.session"
 AUTH_MARK = SESSION_DIR / "authorized"      # 登录成功标记：run 只在它存在时才打开 session，避免与 login 抢锁
 # 与主程序共用的数据库：默认是仓库根的 data/copybot.db，可用环境变量覆盖
 DB_PATH = Path(os.environ.get("COPYBOT_DB") or (BASE.parent / "data" / "copybot.db"))
+# api 凭据放在共享卷 data/ 里：copybot 与 tgcollector 都挂载了 ./data，
+# 网页保存后采集器立刻能读到（放 tg/ 只有采集器挂载，网页写进去会丢）。
+SECRET_DATA = DB_PATH.parent / "tg_secret.json"
+SECRET_LEGACY = BASE / "secret.json"
+
 ADMIN_HOST = "127.0.0.1"     # 管理接口只给同机的主程序调用，不对外暴露
 ADMIN_PORT = int(os.environ.get("TG_ADMIN_PORT") or 8098)
 CONFIG_TTL = 30.0           # 频道/映射缓存时间：页面改完最多 30 秒生效
@@ -66,12 +71,12 @@ def log(msg: str, level: str = "INFO", module: str = "tg") -> None:
 
 
 def api_credentials(cfg: dict) -> tuple[int, str]:
-    """取 api_id/api_hash；缺失时给出可操作的报错，而不是 KeyError 堆栈。"""
+    """取 api_id/api_hash；缺失时抛 SystemExit（调用方负责决定是退出还是等待）。"""
     try:
         return int(cfg["api_id"]), str(cfg["api_hash"])
     except (KeyError, TypeError, ValueError):
-        raise SystemExit("缺少 api_id/api_hash：请在同目录创建 secret.json，"
-                         "内容形如 {\"api_id\": 12345, \"api_hash\": \"abcdef...\"}")
+        raise SystemExit("缺少 api_id/api_hash：请在「TG 频道设置」里填写，"
+                         "或手工创建 data/tg_secret.json")
 
 
 _cfg_cache = {"at": 0.0, "channels": {}}
@@ -111,10 +116,14 @@ def load_config() -> dict:
     """读 config.json，并合并同目录 secret.json（api_id/api_hash 属于凭据，不进仓库）。"""
     with open(CONFIG_PATH, encoding="utf-8") as f:
         cfg = json.load(f)
-    secret = BASE / "secret.json"
-    if secret.exists():
-        with open(secret, encoding="utf-8") as f:
-            cfg.update({k: v for k, v in json.load(f).items() if k in ("api_id", "api_hash")})
+    for secret in (SECRET_DATA, SECRET_LEGACY):
+        if secret.exists():
+            try:
+                with open(secret, encoding="utf-8") as f:
+                    cfg.update({k: v for k, v in json.load(f).items() if k in ("api_id", "api_hash")})
+                break
+            except Exception as exc:
+                log(f"读取凭据失败 {secret}: {type(exc).__name__}", "ERROR")
     return cfg
 
 
@@ -512,6 +521,7 @@ async def _run_check(client, cfg: dict, target: str, traders: dict, limit: int) 
 STATE = {
     "authorized": False, "listening": False, "channels": [], "last_msg_ms": 0,
     "last_error": "", "qr_png": b"", "qr_at": 0, "login_busy": False,
+    "credential_ready": False,
 }
 
 
@@ -550,7 +560,7 @@ def _start_admin(loop, cfg, client_ref):
                 return
             STATE["login_busy"] = True
             try:
-                api_id, api_hash = api_credentials(cfg)
+                api_id, api_hash = api_credentials(load_config())   # 用最新凭据，避免拿到启动时的旧配置
                 c = TelegramClient(str(SESSION_PATH), api_id, api_hash)
                 await c.connect()
                 qr = await c.qr_login()
@@ -608,6 +618,7 @@ def _start_admin(loop, cfg, client_ref):
                     "channels": STATE["channels"], "last_msg_ms": STATE["last_msg_ms"],
                     "today_signals": _today_signals(), "last_error": STATE["last_error"],
                     "login_busy": STATE["login_busy"], "qr_at": STATE["qr_at"],
+                    "credential_ready": STATE.get("credential_ready", False),
                 })
             elif self.path.startswith("/login/qr"):
                 if not STATE["qr_png"]:
@@ -675,12 +686,25 @@ def _start_admin(loop, cfg, client_ref):
 
 async def cmd_run(args) -> int:
     cfg = load_config()
-    api_id, api_hash = api_credentials(cfg)
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
     loop = asyncio.get_running_loop()
     client_ref = {"client": None}
     _start_admin(loop, cfg, client_ref)          # 先起管理接口：未登录时也能从网页发起登录
     log(f"管理接口已监听 {ADMIN_HOST}:{ADMIN_PORT}")
+
+    # 凭据本来就是“容器起来之后从网页填”的，所以这里等待而不是退出（否则 restart 会无限重启）
+    waited = 0
+    while True:
+        try:
+            api_id, api_hash = api_credentials(load_config())
+            break
+        except SystemExit:
+            STATE["credential_ready"] = False
+            if waited % 60 == 0:
+                log("尚未配置 api 凭据：请在「TG 频道设置」里填写（每 15 秒检查一次）", "WARN")
+            await asyncio.sleep(15)
+            waited += 15
+    STATE["credential_ready"] = True
 
     waited = 0
     while not AUTH_MARK.exists():

@@ -252,9 +252,10 @@
     <div class="card p-4 space-y-2">
       <h3 class="font-semibold text-sm">② 登录</h3>
       <div class="flex items-center gap-3">
-        <button class="btn btn-primary btn-sm" @click="startTgLogin()" :disabled="tg.authorized||tg.login_busy">扫码登录</button>
+        <button class="btn btn-primary btn-sm" @click="startTgLogin()" :disabled="tg.authorized||tg.login_busy||!tg.credential_ready">扫码登录</button>
         <span class="text-xs text-ink-400">{{tg.authorized?'已登录，无需重复扫码':(tg.login_busy?'等待扫码…':'')}}</span>
       </div>
+      <div v-if="tg.online && !tg.credential_ready" class="text-xs text-warn">尚未配置 api 凭据：请先在上方「① api 凭据」保存，采集器会自动继续，无需重启</div>
       <img v-if="tgQrSrc && !tg.authorized" :src="tgQrSrc" alt="二维码" style="width:240px;height:240px;background:#fff;padding:8px;border-radius:8px" />
     </div>
 
